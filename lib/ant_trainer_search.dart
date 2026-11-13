@@ -14,6 +14,9 @@ class AntTrainerSearchController extends ChangeNotifier {
   Completer<void>? _ready;
   bool _disposed = false;
   bool commandBusy = false;
+  int _manualCommands = 0;
+  int _manualGeneration = 0;
+  bool manualStopping = false;
   Map<String, Object?> snapshot = {'status': 'not_started', 'running': false};
   bool get running => snapshot['running'] == true;
 
@@ -80,6 +83,7 @@ class AntTrainerSearchController extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    _manualGeneration++;
     commandBusy = true;
     _notify();
     try {
@@ -96,6 +100,44 @@ class AntTrainerSearchController extends ChangeNotifier {
       };
     } finally {
       commandBusy = false;
+      _notify();
+    }
+  }
+
+  Future<void> manualAction(
+    String method, {
+    double? percent,
+    bool confirmed = false,
+    String? expectedSessionId,
+  }) async {
+    final stopping = method == 'stopManualTest';
+    if (stopping && manualStopping) return;
+    if (commandBusy && !stopping) return;
+    if (stopping) {
+      manualStopping = true;
+      _manualGeneration++;
+    }
+    final generation = _manualGeneration;
+    _manualCommands++;
+    commandBusy = true;
+    _notify();
+    try {
+      final report = await channel
+          .invokeMapMethod<String, dynamic>(method, {
+            'sessionId': expectedSessionId ?? snapshot['sessionId'],
+            'confirmed': confirmed,
+            'percent': ?percent,
+          })
+          .timeout(const Duration(seconds: 20));
+      if (report != null && generation == _manualGeneration) _update(report);
+    } catch (error) {
+      if (generation == _manualGeneration) {
+        snapshot = {...snapshot, 'clientError': 'Control manual: $error'};
+      }
+    } finally {
+      if (stopping) manualStopping = false;
+      _manualCommands--;
+      commandBusy = _manualCommands > 0;
       _notify();
     }
   }

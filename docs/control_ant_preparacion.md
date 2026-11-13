@@ -214,3 +214,9 @@ Resultados locales del 2026-11-13:
   No se ha realizado una prueba física ni enviado páginas de control durante
   esta implementación. Los avisos de Gradle sobre Kotlin/AGP son deprecaciones
   preexistentes y no bloquean las pruebas ni la compilación actual.
+
+Actualización: el usuario ha validado físicamente la telemetría del canal
+específico durante 20 s. La fase siguiente incorpora una prueba manual real,
+explícita y limitada: [control_manual_ant.md](control_manual_ant.md). Las
+restricciones de transmisión bloqueada de este documento describen la fase
+anterior y el preparador offline, no una activación automática del nuevo control.

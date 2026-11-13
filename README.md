@@ -47,3 +47,5 @@ comandos de control. [Formatos, capturas, pruebas y limitaciones](docs/telemetri
 - [Icono original SVG, generación Android y comprobaciones](docs/icono_openbkool.md).
 
 - [Preparación bidireccional ANT V1, sin comandos, y plan de primera prueba](docs/control_ant_preparacion.md).
+
+- [Primera prueba manual de pendiente ANT: activación, límites, parada y JSON](docs/control_manual_ant.md).

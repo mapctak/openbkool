@@ -34,6 +34,9 @@ class MainActivity : FlutterActivity() {
                     if (percent == null) result.error("invalid_grade", "Pendiente numérica requerida", null)
                     else session.prepareSlope(percent.toDouble(), result)
                 }
+                "enableManualTest", "setManualSlope", "stopManualTest" -> session.manualAction(call.method,
+                    call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
+                    call.argument<Number>("percent")?.toDouble(), result)
                 "stop" -> session.stop(result)
                 "snapshot" -> result.success(session.snapshot())
                 "exportCsv" -> session.exportCsv(result)

@@ -176,17 +176,32 @@ void main() {
         },
       });
       await tester.scrollUntilVisible(
-        find.byType(Slider),
+        find.byType(CheckboxListTile),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      expect(tester.widget<Slider>(find.byType(Slider)).onChanged, isNull);
-      final button = find.widgetWithText(
-        FilledButton,
-        'Aplicar pendiente (bloqueado)',
+      expect(
+        tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
+        false,
       );
-      expect(tester.widget<FilledButton>(button).onPressed, isNull);
+      expect(
+        tester
+            .widget<CheckboxListTile>(find.byType(CheckboxListTile))
+            .onChanged,
+        isNull,
+      );
+      await tester.scrollUntilVisible(
+        find.widgetWithText(OutlinedButton, '+'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(
+        tester
+            .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '+'))
+            .onPressed,
+        isNull,
+      );
       c.snapshot = {'running': false};
       await tester.pumpWidget(const SizedBox());
       c.dispose();
@@ -195,6 +210,163 @@ void main() {
       messenger.setMockMethodCallHandler(c.channel, null);
       messenger.setMockMethodCallHandler(eventChannel, null);
       debugDefaultTargetPlatformOverride = null;
+    },
+  );
+  testWidgets(
+    'real control needs confirmation; increments and stop use session token; JSON is exportable',
+    (tester) async {
+      final c = AntTrainerSearchController(channelName: 'openbkool/training');
+      c.snapshot = {
+        'sessionId': 'test-session',
+        'running': true,
+        'manualControl': {'eligible': true, 'enabled': false},
+      };
+      final calls = <MethodCall>[];
+      String? copied;
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied = (call.arguments as Map)['text'] as String;
+        }
+        return null;
+      });
+      messenger.setMockMethodCallHandler(c.channel, (call) async {
+        calls.add(call);
+        expect((call.arguments as Map)['sessionId'], 'test-session');
+        if (call.method == 'enableManualTest') {
+          expect((call.arguments as Map)['confirmed'], true);
+          return {
+            ...c.snapshot,
+            'manualControl': {
+              'eligible': true,
+              'enabled': true,
+              'everEnabled': true,
+              'remainingMs': 30000,
+            },
+          };
+        }
+        if (call.method == 'setManualSlope') {
+          return {
+            ...c.snapshot,
+            'manualControl': {
+              'eligible': true,
+              'enabled': true,
+              'everEnabled': true,
+              'remainingMs': 29000,
+              'lastSubmittedPercent': (call.arguments as Map)['percent'],
+            },
+            'manualControlEvents': [
+              {'event': 'api_returned', 'physicalApplication': 'unconfirmed'},
+            ],
+          };
+        }
+        if (call.method == 'stopManualTest') {
+          return {
+            ...c.snapshot,
+            'running': false,
+            'resourcesReleased': true,
+            'manualControl': {
+              'enabled': false,
+              'everEnabled': true,
+              'stopped': true,
+              'stopResult': 'zero_api_returned_unconfirmed',
+            },
+          };
+        }
+        throw StateError('Unexpected method');
+      });
+      await tester.pumpWidget(MaterialApp(home: TrainingPage(controller: c)));
+      expect(calls, isEmpty);
+      await tester.scrollUntilVisible(
+        find.byType(CheckboxListTile),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(CheckboxListTile));
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      await tester.tap(find.text('Cancelar'));
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      await tester.tap(find.byType(CheckboxListTile));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Habilitar prueba'));
+      await tester.pumpAndSettle();
+      expect(calls.map((e) => e.method), ['enableManualTest']);
+      await tester.scrollUntilVisible(
+        find.widgetWithText(OutlinedButton, '+'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '+'));
+      await tester.pumpAndSettle();
+      expect((calls.last.arguments as Map)['percent'], 0.5);
+      await tester.tap(find.widgetWithText(OutlinedButton, '+'));
+      await tester.pumpAndSettle();
+      expect((calls.last.arguments as Map)['percent'], 1.0);
+      expect(
+        tester
+            .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '+'))
+            .onPressed,
+        isNull,
+      );
+      await tester.tap(find.text('Detener prueba'));
+      await tester.pumpAndSettle();
+      expect(calls.last.method, 'stopManualTest');
+      expect(c.snapshot['resourcesReleased'], true);
+      await tester.scrollUntilVisible(
+        find.text('Exportar diagnóstico JSON'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Exportar diagnóstico JSON'));
+      await tester.pumpAndSettle();
+      expect(copied, contains('zero_api_returned_unconfirmed'));
+      expect(copied, contains('manualControlEvents'));
+      expect(calls.any((e) => e.method == 'start'), false);
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+      messenger.setMockMethodCallHandler(c.channel, null);
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+    },
+  );
+  testWidgets(
+    'stop bypasses a pending command and late response cannot revive stopped session',
+    (tester) async {
+      final c = AntTrainerSearchController(channelName: 'openbkool/training');
+      c.snapshot = {'sessionId': 'pending-session', 'running': true};
+      final pending = Completer<Map<String, Object?>>();
+      final calls = <String>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(c.channel, (call) async {
+        calls.add(call.method);
+        if (call.method == 'setManualSlope') return pending.future;
+        return {
+          'sessionId': 'pending-session',
+          'running': false,
+          'resourcesReleased': true,
+        };
+      });
+      final request = c.manualAction('setManualSlope', percent: 0.5);
+      await tester.pump();
+      expect(c.commandBusy, true);
+      final stopping = c.manualAction('stopManualTest');
+      await tester.pump();
+      await stopping;
+      expect(calls, ['setManualSlope', 'stopManualTest']);
+      expect(c.running, false);
+      pending.complete({'sessionId': 'pending-session', 'running': true});
+      await tester.pump();
+      await request;
+      expect(c.running, false);
+      expect(c.commandBusy, false);
+      c.dispose();
+      messenger.setMockMethodCallHandler(c.channel, null);
     },
   );
 }

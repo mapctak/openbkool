@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -45,6 +47,12 @@ class _TrainingPageState extends State<TrainingPage> {
         }
       }
       final t = r['telemetry'] as Map? ?? const {};
+      final manual = r['manualControl'] as Map? ?? const {};
+      final enabled = manual['enabled'] == true;
+      final sessionId = r['sessionId'] as String?;
+      final submitted =
+          (manual['lastSubmittedPercent'] as num?)?.toDouble() ?? 0;
+      final remaining = ((manual['remainingMs'] as num?)?.toInt() ?? 0) ~/ 1000;
       String number(String key, int decimals) =>
           t[key] is num ? (t[key] as num).toStringAsFixed(decimals) : '—';
       final signal = switch (t['signal']) {
@@ -62,11 +70,29 @@ class _TrainingPageState extends State<TrainingPage> {
         },
         child: Scaffold(
           appBar: AppBar(title: const Text('Entrenamiento')),
+          bottomNavigationBar:
+              c.running && (enabled || manual['everEnabled'] == true)
+              ? SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: FilledButton.icon(
+                      onPressed: manual['stopped'] == true || c.manualStopping
+                          ? null
+                          : () => c.manualAction(
+                              'stopManualTest',
+                              expectedSessionId: sessionId,
+                            ),
+                      icon: const Icon(Icons.stop_circle),
+                      label: const Text('Detener prueba'),
+                    ),
+                  ),
+                )
+              : null,
           body: ListView(
             padding: const EdgeInsets.all(16),
             children: [
               const Text(
-                'BKOOL_V1_PUBLIC · telemetría y preparación de conexión. Los comandos permanecen bloqueados.',
+                'BKOOL_V1_PUBLIC · telemetría. Control solo para 30064/112/5, modelo 22, tras activación explícita.',
               ),
               const SizedBox(height: 16),
               Text(c.running ? signal : 'Estado: ${r['status']}'),
@@ -146,23 +172,133 @@ class _TrainingPageState extends State<TrainingPage> {
               Text(
                 'Canal: ${r['channelMode'] ?? 'sin abrir'} · identidad: ${r['connectionState'] ?? 'sin verificar'}',
               ),
-              const Text(
-                'Control manual de pendiente: deshabilitado en esta versión',
-              ),
-              const Slider(
-                value: 0,
-                min: 0,
-                max: 1,
-                divisions: 100,
-                label: '0 %',
-                onChanged: null,
-              ),
-              const FilledButton(
-                onPressed: null,
-                child: Text('Aplicar pendiente (bloqueado)'),
+              const SizedBox(height: 16),
+              Text(
+                'Control manual',
+                style: Theme.of(context).textTheme.titleLarge,
               ),
               const Text(
-                'Cerrar el canal NO garantiza resistencia cero. Para detenerte, deja de pedalear antes de desmontar. No se transmite ninguna orden de parada.',
+                'Prueba limitada a 30 s y a 0–1 %. La recepción de telemetría permanece activa.',
+              ),
+              CheckboxListTile(
+                title: const Text('Habilitar prueba de resistencia'),
+                value: enabled,
+                onChanged:
+                    c.running &&
+                        !c.commandBusy &&
+                        (enabled || manual['eligible'] == true)
+                    ? (value) async {
+                        if (value != true) {
+                          await c.manualAction(
+                            'stopManualTest',
+                            expectedSessionId: sessionId,
+                          );
+                          return;
+                        }
+                        final accepted = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('Activar control real ANT'),
+                            content: const Text(
+                              'Se podrán enviar pendientes 0 %, 0,5 % y 1 % al rodillo 30064/112/5. Detener intentará solicitar 0 % antes de cerrar, sin garantizar su aplicación ni una resistencia segura. Si hay una reacción inesperada, deja de pedalear y espera a que se detenga la rueda. La activación caduca en 30 segundos.',
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(context, false),
+                                child: const Text('Cancelar'),
+                              ),
+                              FilledButton(
+                                onPressed: () => Navigator.pop(context, true),
+                                child: const Text('Habilitar prueba'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (accepted == true && mounted) {
+                          await c.manualAction(
+                            'enableManualTest',
+                            confirmed: true,
+                            expectedSessionId: sessionId,
+                          );
+                        }
+                      }
+                    : null,
+              ),
+              if (enabled) Text('Tiempo restante: $remaining s'),
+              if (!enabled && manual['unavailableReason'] != null)
+                Text('Control no disponible: ${manual['unavailableReason']}'),
+              Text(
+                'Última pendiente entregada a la API: ${manual['lastSubmittedPercent'] ?? 'ninguna'} %. Aplicación física SIN confirmar.',
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  OutlinedButton(
+                    onPressed: enabled && !c.commandBusy && submitted > 0
+                        ? () => c.manualAction(
+                            'setManualSlope',
+                            percent: submitted - 0.5,
+                            expectedSessionId: sessionId,
+                          )
+                        : null,
+                    child: const Text('−'),
+                  ),
+                  OutlinedButton(
+                    onPressed: enabled && !c.commandBusy
+                        ? () => c.manualAction(
+                            'setManualSlope',
+                            percent: 0,
+                            expectedSessionId: sessionId,
+                          )
+                        : null,
+                    child: const Text('0 %'),
+                  ),
+                  OutlinedButton(
+                    onPressed: enabled && !c.commandBusy && submitted < 1
+                        ? () => c.manualAction(
+                            'setManualSlope',
+                            percent: submitted + 0.5,
+                            expectedSessionId: sessionId,
+                          )
+                        : null,
+                    child: const Text('+'),
+                  ),
+                ],
+              ),
+              const Text(
+                'Detener prueba solicita 0 % solo si la radio sigue disponible y después cierra el canal. Ni enviar 0 % ni cerrar garantizan una resistencia segura. No hay recuperación automática del control: reconecta y habilita una nueva prueba.',
+              ),
+              if (manual['lastResult'] != null)
+                SelectableText('Resultado: ${manual['lastResult']}'),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  try {
+                    await Clipboard.setData(
+                      ClipboardData(
+                        text: const JsonEncoder.withIndent('  ').convert(r),
+                      ),
+                    );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Diagnóstico de entrenamiento JSON copiado',
+                          ),
+                        ),
+                      );
+                    }
+                  } catch (error) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Error al exportar JSON: $error'),
+                        ),
+                      );
+                    }
+                  }
+                },
+                icon: const Icon(Icons.copy),
+                label: const Text('Exportar diagnóstico JSON'),
               ),
               OutlinedButton.icon(
                 onPressed: c.running || c.commandBusy || r['csvFile'] == null

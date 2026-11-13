@@ -36,7 +36,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.RejectedExecutionException
 
-/** Solo recepción V1 y suscripciones informativas FE-C. Sin páginas de control. */
+/** Diagnóstico RX y entrenamiento V1; control manual solo tras activación explícita por sesión. */
 class AntTrainerSearch(context: Context, private val training: Boolean = false,
     private val onRunningChanged: (Boolean) -> Unit = {}) : EventChannel.StreamHandler {
     private val context = context.applicationContext
@@ -86,13 +86,20 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         if (session == null) { result?.success(latest); return }
         session.cancelled = true
         try {
-            session.worker.execute { session.finish("stopped"); result?.success(latest) }
+            session.worker.execute { session.end("stopped", result) }
         } catch (_: RejectedExecutionException) { result?.success(latest) }
     }
     fun prepareSlope(percent: Double, result: MethodChannel.Result) {
         val session = active
         if (!training || session == null) { result.error("not_connected", "No hay sesión activa", null); return }
         try { session.worker.execute { session.prepareSlope(percent, result) } }
+        catch (_: RejectedExecutionException) { result.error("session_closed", "Sesión cerrada", null) }
+    }
+    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result) {
+        val session = active
+        if (!training || session == null) { result.error("not_connected", "No hay entrenamiento activo", null); return }
+        if (method == "stopManualTest" && session.id == sessionId) session.cancelled = true
+        try { session.worker.execute { session.manualAction(method, sessionId, explicit, percent, result) } }
         catch (_: RejectedExecutionException) { result.error("session_closed", "Sesión cerrada", null) }
     }
     fun exportCsv(result: MethodChannel.Result) {
@@ -116,6 +123,30 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private var stage = "starting"
         private var status = "running"
         private val startedAt = now()
+        val id = java.util.UUID.randomUUID().toString()
+        private var stopping = false
+        @Volatile private var radioDead = false
+        private val stopReplies = mutableListOf<MethodChannel.Result>()
+        private val manualEvents = mutableListOf<Map<String, Any?>>()
+        private var finalClose: Runnable? = null
+        private val manual by lazy { ManualAntControl(target, android.os.SystemClock::elapsedRealtime,
+            ::manualLink, { payload, zero ->
+                check((zero || !cancelled) && !finished && !radioDead && manualLink().reason(target) == null) { "Canal o señal no disponibles" }
+                val selectedChannel = checkNotNull(channel) { "Canal cerrado" }
+                selectedChannel.setBroadcastData(payload)
+            }, { e ->
+                val entry = e + mapOf("timestamp" to now(), "sessionId" to id)
+                manualEvents.add(entry)
+                event("manual_control", entry.toString())
+            }, ::antErrorDetails) }
+        private fun manualLink(): ManualControlLink {
+            val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime())
+            val device = devices.values.firstOrNull { it["deviceNumber"] == target.number && it["deviceType"] == target.type && it["transmissionType"] == target.transmission }
+            return ManualControlLink(dedicated && opened && !radioDead && !finished,
+                identityVerified, device?.get("manufacturerId") as? Int, device?.get("modelNumber") as? Int,
+                t?.get("signalAgeMs") as? Long,
+                t?.get("speedKmh") != null && t["powerW"] != null && t["cadenceRpm"] != null)
+        }
         private val dedicated = mode == "training_connected"
         private val control = ManualSlopePreparation(target)
         private var identityVerified = false
@@ -126,6 +157,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private var lastSignal: String? = null
         private val heartbeat = Runnable { submit {
             if (!finished && !cancelled && opened) {
+                manual.abortReason()?.let { finish(it); return@submit }
                 val signal = telemetry!!.signal(android.os.SystemClock.elapsedRealtime())
                 control.connectionVerified(dedicated && identityVerified && signal == "receiving")
                 if (signal != lastSignal) { event("signal", signal); lastSignal = signal; record("signal:$signal", null) }
@@ -197,6 +229,24 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             publish()
             result.success(plan)
         }
+        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result) {
+            if (sessionId != id) { result.error("stale_session", "La sesión ha cambiado; vuelve a conectar", null); return }
+            if (finished || stopping || (cancelled && method != "stopManualTest")) {
+                result.error("session_stopping", "La sesión está cerrándose", null); return
+            }
+            when (method) {
+                "enableManualTest" -> manual.enable(explicit)
+                "setManualSlope" -> {
+                    if (percent == null) { result.error("invalid_slope", "Pendiente numérica requerida", null); return }
+                    manual.request(percent)
+                }
+                "stopManualTest" -> { end("manual_stop", result); return }
+            }
+            val failure = manual.abortReason()
+            if (manual.snapshot()["faulted"] == true) { end("manual_api_error", result); return }
+            if (failure != null) { end(failure, result); return }
+            publish(); result.success(latest)
+        }
         fun begin() {
             if (cancelled) { finish("stopped"); return }
             event("search_start", "Búsqueda $mode. Solo recepción e información; Bkool V2 desactivado.")
@@ -234,10 +284,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private fun publish() {
             if (active !== this) return
             val report = mapOf(
+                "sessionId" to id, "manualControl" to manual.snapshot(), "manualControlEvents" to manualEvents.toList(),
                 "selectedDevice" to target.toMap(),
-                "channelMode" to if (dedicated) "dedicated_bidirectional_no_commands" else "background_receive_only",
+                "channelMode" to if (dedicated) "dedicated_bidirectional_manual_opt_in" else "background_receive_only",
                 "connectionState" to if (finished) "closed" else if (identityVerified) "identity_verified" else "waiting_for_identity",
-                "controlPreparation" to control.snapshot(),
+                "controlPreparation" to (control.snapshot() + mapOf("mode" to "dry_run_only")),
                 "telemetry" to telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()),
                 "csvFile" to csvFile, "csvError" to csvError,
                 "status" to status, "running" to !finished, "stage" to stage,
@@ -407,7 +458,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 channelCapabilities = capabilityDetails(actualCaps)
                 if (cancelled) { finish("stopped"); return }
                 operations.run("v1.setChannelEventHandler") { acquired.setChannelEventHandler(object : IAntChannelEventHandler {
-                    override fun onChannelDeath() { channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("disconnected") } }
+                    override fun onChannelDeath() { radioDead = true; channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("disconnected") } }
                     override fun onReceiveMessage(type: MessageFromAntType, parcel: AntMessageParcel) {
                         val id = parcel.messageId; val content = parcel.messageContent.copyOf()
                         if (type == MessageFromAntType.CHANNEL_EVENT && content.size >= 3 && content[2].toInt() and 255 == 7) {
@@ -453,7 +504,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 if (dedicated) configureV1Dedicated(configuration, target, actualCaps.rfFrequencyMin, actualCaps.rfFrequencyMax, operations)
                 else configureV1Background(configuration, V1ChannelCapabilities(actualCaps.hasBackgroundScanning(), actualCaps.hasExtendedAssign(),
                     actualCaps.rfFrequencyMin, actualCaps.rfFrequencyMax), operations)
-                event("v1_listening", "Escucha V1 activa; modo=$mode; destino=$target; transmisión de datos bloqueada")
+                event("v1_listening", "Escucha V1 activa; modo=$mode; destino=$target; control manual desactivado hasta habilitación explícita")
                 if (training) {
                     phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
                     main.post(heartbeat)
@@ -466,7 +517,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 } else { fail("V1 configure", error) }
             }
         }
-        override fun onServiceDisconnected(name: ComponentName) { submit { if (!finished) { event("service_disconnected", "ANT Radio Service desconectado"); finish("disconnected") } } }
+        override fun onServiceDisconnected(name: ComponentName) { radioDead = true; submit { if (!finished) { event("service_disconnected", "ANT Radio Service desconectado"); finish("disconnected") } } }
         override fun onBindingDied(name: ComponentName) { onServiceDisconnected(name) }
         override fun onNullBinding(name: ComponentName) { onServiceDisconnected(name) }
 
@@ -505,6 +556,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 val code = content[2].toInt() and 255
                 event("channel_event", "Evento ANT recibido: 0x%02X".format(code))
                 if (code == 1 || code == 7) {
+                    radioDead = true
                     phaseErrors = true
                     if (training) finish("disconnected") else advance()
                     return
@@ -549,6 +601,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             return resourcesReleased
         }
         private fun advance() {
+            if (training) { finish(if (phaseErrors) "error" else "completed"); return }
             val from = stage
             if (!cleanup()) { finish("cleanup_failed"); return }
             if (cancelled) { finish("stopped"); return }
@@ -557,11 +610,28 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 else -> finish(if (phaseErrors) "partial" else "completed")
             }
         }
+        fun end(reason: String, result: MethodChannel.Result? = null) {
+            if (finished) { result?.success(latest); return }
+            result?.let { stopReplies.add(it) }
+            finish(reason)
+        }
         fun finish(reason: String) {
-            if (finished) return
+            if (finished || stopping) return
+            stopping = true; cancelled = true
             control.stop()
-            if (training) event("safe_stop", "Sin comandos pendientes ni reset transmitido. Resistencia tras cerrar: desconocida; dejar de pedalear antes de desmontar.")
             main.removeCallbacks(heartbeat)
+            val zeroQueued = manual.stop(reason, allowZero = !radioDead && !reason.startsWith("link_lost") && reason != "disconnected")
+            event("safe_stop", "Parada $reason; solicitud 0 % a API=$zeroQueued. Aplicación y resistencia segura SIN confirmar.")
+            if (zeroQueued) {
+                status = "stopping_zero_unconfirmed"; publish()
+                val task = Runnable { submit { closeAfterStop(reason) } }
+                finalClose = task
+                main.postDelayed(task, ManualAntControl.DRAIN_MS)
+            } else closeAfterStop(reason)
+        }
+        private fun closeAfterStop(reason: String) {
+            if (finished) return
+            finalClose?.let { main.removeCallbacks(it) }; finalClose = null
             val clean = cleanup()
             if (training) {
                 record("finished:$reason", null)
@@ -575,6 +645,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             publish()
             if (resourcesReleased) AntRadioCoordinator.release(this)
             active = null
+            stopReplies.forEach { it.success(latest) }; stopReplies.clear()
             worker.shutdown()
         }
     }
