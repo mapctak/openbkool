@@ -3,16 +3,47 @@ import 'package:flutter/services.dart';
 
 import 'ant_trainer_search.dart';
 
-class TrainingPage extends StatelessWidget {
-  const TrainingPage({super.key, required this.controller});
+class TrainingPage extends StatefulWidget {
+  const TrainingPage({
+    super.key,
+    required this.controller,
+    this.searchController,
+    this.onExport,
+  });
   final AntTrainerSearchController controller;
 
+  final AntTrainerSearchController? searchController;
+  final Future<void> Function()? onExport;
+  @override
+  State<TrainingPage> createState() => _TrainingPageState();
+}
+
+class _TrainingPageState extends State<TrainingPage> {
+  Map<String, Object?> selected = const {
+    'protocol': 'BKOOL_V1_PUBLIC',
+    'deviceNumber': 30064,
+    'deviceType': 112,
+    'transmissionType': 5,
+  };
+  String keyOf(Map d) =>
+      '${d['deviceNumber']}:${d['deviceType']}:${d['transmissionType']}';
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: controller,
+    animation: widget.controller,
     builder: (context, _) {
-      final c = controller;
+      final c = widget.controller;
       final r = c.snapshot;
+      final choices = <String, Map<String, Object?>>{keyOf(selected): selected};
+      for (final value
+          in widget.searchController?.snapshot['devices'] as List? ??
+              const []) {
+        final d = Map<String, Object?>.from(value as Map);
+        if (d['protocol'] == 'BKOOL_V1_PUBLIC' &&
+            d['deviceType'] == 112 &&
+            d['transmissionType'] != null) {
+          choices[keyOf(d)] = d;
+        }
+      }
       final t = r['telemetry'] as Map? ?? const {};
       String number(String key, int decimals) =>
           t[key] is num ? (t[key] as num).toStringAsFixed(decimals) : '—';
@@ -35,7 +66,7 @@ class TrainingPage extends StatelessWidget {
             padding: const EdgeInsets.all(16),
             children: [
               const Text(
-                'Bkool Smart Pro v1 · ID 30064 · tipo 112 · transmisión 5\nBKOOL_V1_PUBLIC · solo recepción',
+                'BKOOL_V1_PUBLIC · telemetría y preparación de conexión. Los comandos permanecen bloqueados.',
               ),
               const SizedBox(height: 16),
               Text(c.running ? signal : 'Estado: ${r['status']}'),
@@ -65,7 +96,7 @@ class TrainingPage extends StatelessWidget {
               FilledButton.icon(
                 onPressed: c.running || c.commandBusy
                     ? null
-                    : () => c.start('training'),
+                    : () => c.start('training', device: selected),
                 icon: const Icon(Icons.play_arrow),
                 label: const Text('Iniciar entrenamiento'),
               ),
@@ -73,6 +104,65 @@ class TrainingPage extends StatelessWidget {
                 onPressed: c.running && !c.commandBusy ? c.stop : null,
                 icon: const Icon(Icons.stop),
                 label: const Text('Finalizar entrenamiento'),
+              ),
+              if (widget.searchController != null)
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.search),
+                  label: const Text('1. Buscar rodillos ANT'),
+                  onPressed: c.running || c.commandBusy
+                      ? null
+                      : () async {
+                          await Navigator.of(context).push<void>(
+                            MaterialPageRoute(
+                              builder: (_) => AntTrainerSearchPage(
+                                controller: widget.searchController!,
+                                onExport: widget.onExport ?? () async {},
+                              ),
+                            ),
+                          );
+                          if (mounted) setState(() {});
+                        },
+                ),
+              DropdownButtonFormField<String>(
+                initialValue: keyOf(selected),
+                decoration: const InputDecoration(
+                  labelText: '2. Seleccionar rodillo (ID / tipo / transmisión)',
+                ),
+                items: [
+                  for (final e in choices.entries)
+                    DropdownMenuItem(value: e.key, child: Text(e.key)),
+                ],
+                onChanged: c.running || c.commandBusy
+                    ? null
+                    : (value) => setState(() => selected = choices[value]!),
+              ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.link),
+                label: const Text('3. Conectar y entrenar (sin comandos)'),
+                onPressed: c.running || c.commandBusy
+                    ? null
+                    : () => c.start('training_connected', device: selected),
+              ),
+              Text(
+                'Canal: ${r['channelMode'] ?? 'sin abrir'} · identidad: ${r['connectionState'] ?? 'sin verificar'}',
+              ),
+              const Text(
+                'Control manual de pendiente: deshabilitado en esta versión',
+              ),
+              const Slider(
+                value: 0,
+                min: 0,
+                max: 1,
+                divisions: 100,
+                label: '0 %',
+                onChanged: null,
+              ),
+              const FilledButton(
+                onPressed: null,
+                child: Text('Aplicar pendiente (bloqueado)'),
+              ),
+              const Text(
+                'Cerrar el canal NO garantiza resistencia cero. Para detenerte, deja de pedalear antes de desmontar. No se transmite ninguna orden de parada.',
               ),
               OutlinedButton.icon(
                 onPressed: c.running || c.commandBusy || r['csvFile'] == null

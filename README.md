@@ -45,3 +45,5 @@ pérdida de señal. Al finalizar permite copiar el registro CSV. No transmite
 comandos de control. [Formatos, capturas, pruebas y limitaciones](docs/telemetria_ant.md).
 
 - [Icono original SVG, generación Android y comprobaciones](docs/icono_openbkool.md).
+
+- [Preparación bidireccional ANT V1, sin comandos, y plan de primera prueba](docs/control_ant_preparacion.md).

@@ -28,7 +28,12 @@ class MainActivity : FlutterActivity() {
             val session = training
             if (session == null) result.error("not_ready", "Entrenamiento no inicializado", null)
             else when (call.method) {
-                "start" -> session.start("training", result)
+                "start" -> session.start(call.argument<String>("mode") ?: "training", result, call.argument<Map<String, Any?>>("device"))
+                "prepareSlope" -> {
+                    val percent = call.argument<Number>("percent")
+                    if (percent == null) result.error("invalid_grade", "Pendiente numérica requerida", null)
+                    else session.prepareSlope(percent.toDouble(), result)
+                }
                 "stop" -> session.stop(result)
                 "snapshot" -> result.success(session.snapshot())
                 "exportCsv" -> session.exportCsv(result)

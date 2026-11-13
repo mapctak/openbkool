@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -49,13 +52,23 @@ void main() {
     expect(find.text('12.5 km/h'), findsOneWidget);
     expect(find.text('29 W'), findsOneWidget);
     expect(find.text('23 RPM'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Finalizar entrenamiento'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Finalizar entrenamiento'));
     await tester.pumpAndSettle();
     expect(c.running, false);
     expect(c.snapshot['resourcesReleased'], true);
     await tester.drag(find.byType(ListView), const Offset(0, -350));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Exportar CSV al portapapeles'));
+    await tester.scrollUntilVisible(
+      find.text('Exportar CSV al portapapeles'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.pumpAndSettle();
     await tester.tap(find.text('Exportar CSV al portapapeles'));
     await tester.pumpAndSettle();
@@ -87,4 +100,101 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     c.dispose();
   });
+  testWidgets(
+    'manual control disabled and dedicated mode is explicit with selected identity',
+    (tester) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final c = AntTrainerSearchController(channelName: 'openbkool/training');
+      final search = AntTrainerSearchController();
+      search.snapshot = {
+        'devices': [
+          {
+            'protocol': 'BKOOL_V1_PUBLIC',
+            'deviceNumber': 123,
+            'deviceType': 112,
+            'transmissionType': 6,
+          },
+        ],
+      };
+      final calls = <MethodCall>[];
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      const eventChannel = MethodChannel('openbkool/training/events');
+      messenger.setMockMethodCallHandler(eventChannel, (call) async {
+        if (call.method == 'listen') {
+          scheduleMicrotask(() {
+            messenger.handlePlatformMessage(
+              'openbkool/training/events',
+              const StandardMethodCodec().encodeSuccessEnvelope({
+                'status': 'not_started',
+                'running': false,
+              }),
+              (_) {},
+            );
+          });
+        }
+        return null;
+      });
+      messenger.setMockMethodCallHandler(c.channel, (call) async {
+        calls.add(call);
+        return null;
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: TrainingPage(controller: c, searchController: search),
+        ),
+      );
+      expect(calls, isEmpty);
+      await tester.scrollUntilVisible(
+        find.byType(DropdownButtonFormField<String>),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('123:112:6').last);
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('3. Conectar y entrenar (sin comandos)'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('3. Conectar y entrenar (sin comandos)'));
+      await tester.pumpAndSettle();
+      expect(calls.length, 1);
+      expect(calls.single.method, 'start');
+      expect(calls.single.arguments, {
+        'mode': 'training_connected',
+        'device': {
+          'protocol': 'BKOOL_V1_PUBLIC',
+          'deviceNumber': 123,
+          'deviceType': 112,
+          'transmissionType': 6,
+        },
+      });
+      await tester.scrollUntilVisible(
+        find.byType(Slider),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(tester.widget<Slider>(find.byType(Slider)).onChanged, isNull);
+      final button = find.widgetWithText(
+        FilledButton,
+        'Aplicar pendiente (bloqueado)',
+      );
+      expect(tester.widget<FilledButton>(button).onPressed, isNull);
+      c.snapshot = {'running': false};
+      await tester.pumpWidget(const SizedBox());
+      c.dispose();
+      search.dispose();
+      await tester.pump();
+      messenger.setMockMethodCallHandler(c.channel, null);
+      messenger.setMockMethodCallHandler(eventChannel, null);
+      debugDefaultTargetPlatformOverride = null;
+    },
+  );
 }

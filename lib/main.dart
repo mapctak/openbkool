@@ -454,7 +454,11 @@ class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
             subtitle: const Text('Telemetría ANT · Smart Pro v1 · ID 30064'),
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(
-                builder: (_) => TrainingPage(controller: _training),
+                builder: (_) => TrainingPage(
+                  controller: _training,
+                  searchController: _antTrainerSearch,
+                  onExport: _export,
+                ),
               ),
             ),
           ),

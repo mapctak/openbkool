@@ -165,3 +165,13 @@ Actualización posterior del 2026-11-13 (integración del nuevo icono):
 La APK `build/app/outputs/flutter-apk/app-debug.apk` ya incluye los últimos
 ajustes de telemetría descritos arriba. Queda resuelto el bloqueo anterior de
 compilación; la prueba física de entrenamiento sigue pendiente.
+
+## Evolución: canal específico sin comandos
+
+La recepción física y el CSV se han confirmado posteriormente en S7/S20 por el
+usuario. Se conserva el modo de background anterior y se añade una conexión
+explícita al ID seleccionado, sin páginas de control. La identidad del CSV y del
+decodificador ya es configurable y no queda fijada a 30064. Véase
+[preparación del control ANT](control_ant_preparacion.md) para el canal normal,
+la selección, los timeouts y las limitaciones de seguridad. El nuevo canal
+específico tiene pendiente su propia comprobación física.

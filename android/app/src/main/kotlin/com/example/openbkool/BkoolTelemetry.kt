@@ -21,7 +21,8 @@ internal fun decodeBkoolPage(payload: ByteArray): BkoolPage? {
     }
 }
 
-internal class BkoolTelemetry(private val startedMs: Long) {
+internal class BkoolTelemetry(private val startedMs: Long,
+    private val target: AntTrainerIdentity = AntTrainerIdentity(30064, 112, 5)) {
     var lastReceivedMs: Long? = null; private set
     private var speedAt: Long? = null
     private var powerAt: Long? = null
@@ -33,7 +34,7 @@ internal class BkoolTelemetry(private val startedMs: Long) {
     private var distance = 0L
     private var partial = false
     private var signalLost = false
-    fun accepts(f: AntReceivedFrame) = f.deviceNumber == 30064 && f.deviceType == 112 && f.transmissionType == 5
+    fun accepts(f: AntReceivedFrame) = target.matches(f)
     fun receive(frame: AntReceivedFrame, ms: Long): BkoolPage? {
         if (!accepts(frame)) return null
         if (lastReceivedMs?.let { ms - it >= 5000 } == true) loseSignal()
@@ -78,7 +79,7 @@ internal class BkoolTelemetry(private val startedMs: Long) {
             "distanceM" to distance, "distancePartial" to partial,
             "speedAgeMs" to speedAt?.let { ms - it }, "powerAgeMs" to powerAt?.let { ms - it },
             "signalAgeMs" to lastReceivedMs?.let { ms - it }, "elapsedMs" to ms - startedMs,
-            "deviceNumber" to 30064, "deviceType" to 112, "transmissionType" to 5,
+            "deviceNumber" to target.number, "deviceType" to target.type, "transmissionType" to target.transmission,
             "protocol" to "BKOOL_V1_PUBLIC")
     }
 }

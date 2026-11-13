@@ -43,7 +43,7 @@ class AntTrainerSearchController extends ChangeNotifier {
     return _ready!.future.timeout(const Duration(seconds: 4));
   }
 
-  Future<void> start(String mode) async {
+  Future<void> start(String mode, {Map<String, Object?>? device}) async {
     if (running || commandBusy) return;
     commandBusy = true;
     _notify();
@@ -62,7 +62,10 @@ class AntTrainerSearchController extends ChangeNotifier {
         'resourcesReleased': null,
       };
       _notify();
-      await channel.invokeMethod<void>('start', {'mode': mode});
+      await channel.invokeMethod<void>('start', {
+        'mode': mode,
+        'device': ?device,
+      });
     } catch (error) {
       snapshot = {
         ...snapshot,
