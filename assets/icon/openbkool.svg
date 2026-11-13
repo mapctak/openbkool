@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 108 108">
+  <title>OpenBkool</title>
+  <desc>Bicicleta de carretera blanca original sobre verde esmeralda.</desc>
+  <rect width="108" height="108" fill="#008F70"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 44,64 A 10,10 0 1,1 24,64 A 10,10 0 1,1 44,64 Z"/>
+    <path d="M 84,64 A 10,10 0 1,1 64,64 A 10,10 0 1,1 84,64 Z"/>
+    <path d="M 34,64 L 47,48 L 54,64 Z M 47,48 L 68,48 L 54,64 M 74,64 L 65,40 L 73,40 C 79,40 79,48 74,48 L 72,48 M 47,48 L 45,43 M 40,43 L 49,43 M 54,64 L 58,67 L 61,67"/>
+  </g>
+</svg>
