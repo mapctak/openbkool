@@ -10,31 +10,79 @@ import 'ble_diagnostics.dart';
 import 'ant_diagnostics.dart';
 import 'ant_trainer_search.dart';
 import 'training.dart';
+import 'app_home.dart';
+import 'trainer_session.dart';
 
 void main() => runApp(const OpenBkoolApp());
 
 class OpenBkoolApp extends StatelessWidget {
-  const OpenBkoolApp({super.key});
+  const OpenBkoolApp({super.key, this.session});
+  final TrainerSession? session;
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'OpenBkool - diagnóstico BLE',
-    theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
-    home: const BleDiagnosticPage(),
+    title: 'OpenBkool',
+    debugShowCheckedModeBanner: false,
+    theme: ThemeData(
+      colorScheme: ColorScheme.fromSeed(seedColor: emerald, primary: emerald),
+      scaffoldBackgroundColor: const Color(0xFFF4F7F6),
+      useMaterial3: true,
+      cardTheme: CardThemeData(
+        elevation: 0,
+        color: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFFE0E8E5)),
+        ),
+      ),
+      appBarTheme: const AppBarTheme(backgroundColor: Color(0xFFF4F7F6)),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(minimumSize: const Size(48, 52)),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(minimumSize: const Size(48, 56)),
+      ),
+    ),
+    home: OpenBkoolShell(
+      session: session,
+      advancedBuilder: (session, close) => BleDiagnosticPage(
+        antDiagnostics: session.diagnostics,
+        antTrainerSearch: session.search,
+        training: session.training,
+        initialDevice: session.selected.toJson(),
+        onDeviceSelected: (d) => session.select(SavedTrainer.fromMap(d)),
+        onExit: close,
+      ),
+    ),
   );
 }
 
 class BleDiagnosticPage extends StatefulWidget {
-  const BleDiagnosticPage({super.key});
+  const BleDiagnosticPage({
+    super.key,
+    this.antDiagnostics,
+    this.antTrainerSearch,
+    this.training,
+    this.onExit,
+    this.initialDevice,
+    this.onDeviceSelected,
+  });
+  final AntDiagnosticsController? antDiagnostics;
+  final AntTrainerSearchController? antTrainerSearch, training;
+  final VoidCallback? onExit;
+  final Map<String, Object?>? initialDevice;
+  final Future<void> Function(Map<String, Object?>)? onDeviceSelected;
   @override
   State<BleDiagnosticPage> createState() => _BleDiagnosticPageState();
 }
 
 class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
-  final _antDiagnostics = AntDiagnosticsController();
-  final _antTrainerSearch = AntTrainerSearchController();
-  final _training = AntTrainerSearchController(
-    channelName: 'openbkool/training',
-  );
+  late final _antDiagnostics =
+      widget.antDiagnostics ?? AntDiagnosticsController();
+  late final _antTrainerSearch =
+      widget.antTrainerSearch ?? AntTrainerSearchController();
+  late final _training =
+      widget.training ??
+      AntTrainerSearchController(channelName: 'openbkool/training');
   static const _permissions = MethodChannel('openbkool/permissions');
   final Map<String, BleObservation> _found = {};
   final List<Map<String, Object?>> _events = [];
@@ -385,9 +433,9 @@ class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
 
   @override
   void dispose() {
-    _training.dispose();
-    _antTrainerSearch.dispose();
-    _antDiagnostics.dispose();
+    if (widget.training == null) _training.dispose();
+    if (widget.antTrainerSearch == null) _antTrainerSearch.dispose();
+    if (widget.antDiagnostics == null) _antDiagnostics.dispose();
     _scanSubscription?.cancel();
     _scanningSubscription?.cancel();
     _adapterSubscription?.cancel();
@@ -445,17 +493,30 @@ class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
     final results = _found.values.toList()
       ..sort((a, b) => b.rssi.compareTo(a.rssi));
     return Scaffold(
-      appBar: AppBar(title: const Text('OpenBkool · BLE diagnóstico')),
+      appBar: AppBar(
+        title: const Text('Diagnósticos avanzados'),
+        leading: widget.onExit == null
+            ? null
+            : IconButton(
+                tooltip: 'Volver al inicio',
+                onPressed: widget.onExit,
+                icon: const Icon(Icons.arrow_back),
+              ),
+      ),
       body: ListView(
         children: [
           ListTile(
             leading: const Icon(Icons.directions_bike),
             title: const Text('Entrenamiento'),
-            subtitle: const Text('Telemetría ANT · Smart Pro v1 · ID 30064'),
+            subtitle: Text(
+              'Telemetría y control detallados · ${widget.initialDevice?['deviceNumber'] ?? 30064}/${widget.initialDevice?['deviceType'] ?? 112}/${widget.initialDevice?['transmissionType'] ?? 5}',
+            ),
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(
                 builder: (_) => TrainingPage(
                   controller: _training,
+                  initialDevice: widget.initialDevice,
+                  onDeviceSelected: widget.onDeviceSelected,
                   searchController: _antTrainerSearch,
                   onExport: _export,
                 ),

@@ -17,6 +17,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        val preferences = TrainerPreferences(this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/preferences")
+            .setMethodCallHandler(preferences::handle)
         antDiagnostics = AntDiagnostics(this)
         antTrainerSearch = AntTrainerSearch(this)
         training = AntTrainerSearch(this, training = true) { running ->
