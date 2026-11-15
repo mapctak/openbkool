@@ -166,4 +166,39 @@ class ManualAntControlTest {
         assertTrue(r.frames.isEmpty())
     }
 
+    @Test fun futureEncodingDoesNotAuthorizeTwoPercent() {
+        assertEquals("33 FF FF FF FF E8 4E FF", hex(encodeSlopeCandidate(2.0)))
+        val r = Rig(); r.c.enable(true)
+        assertEquals("invalid_slope", r.c.request(2.0)["reason"])
+        assertTrue(r.frames.isEmpty())
+        assertEquals(30000L, r.c.snapshot()["maxDurationMs"])
+        assertEquals(1.0, r.c.snapshot()["operationalMaxPercent"])
+        assertEquals(false, r.c.snapshot()["continuousControlEnabled"])
+    }
+    @Test fun canonicalRequestAndSuccessRemainSeparateAfterFailureAndStop() {
+        val r = Rig(); r.c.enable(true); r.c.request(0.5)
+        r.time = 1000; r.failure = IllegalStateException("radio lost"); r.c.request(1.0)
+        val state = r.c.snapshot()
+        assertEquals(1.0, state["lastRequestedPercent"])
+        assertEquals(0.5, state["lastSubmittedPercent"])
+        assertEquals(0.5, (state["lastApiSuccess"] as Map<*,*>)["requestedPercent"])
+        assertEquals("api_error", (state["lastApiError"] as Map<*,*>)["event"])
+        r.c.stop("exit", false)
+        assertEquals(1.0, r.c.snapshot()["lastRequestedPercent"])
+        assertEquals(1, r.frames.size)
+    }
+
+    @Test fun acceptedManualSequenceIsSeparateFromStopCommand() {
+        val r = Rig(); r.c.enable(true)
+        for (value in listOf(0.5, 1.0, 0.5, 0.0)) {
+            r.time += 1000; r.c.request(value)
+            assertEquals(value, (r.c.snapshot()["lastManualApiSuccess"] as Map<*,*>)["requestedPercent"])
+        }
+        r.c.stop("test_timeout", true)
+        val state = r.c.snapshot()
+        assertEquals(false, (state["lastManualApiSuccess"] as Map<*,*>)["stopRequest"])
+        assertEquals(true, (state["lastStopCommand"] as Map<*,*>)["stopRequest"])
+        assertEquals(listOf(0.5,1.0,0.5,0.0,0.0), r.events.filter { it["event"] == "api_returned" }.map { it["requestedPercent"] })
+    }
+
 }

@@ -105,7 +105,13 @@ class _TrainingPageState extends State<TrainingPage> {
       final remainingMs = (manual['remainingMs'] as num?)?.toInt();
       final remaining = (remainingMs ?? 0) ~/ 1000;
       final canRequest =
-          enabled && !c.commandBusy && remainingMs != null && remainingMs > 0;
+          enabled &&
+          c.running &&
+          manual['eligible'] != false &&
+          !c.manualStopping &&
+          !c.commandBusy &&
+          remainingMs != null &&
+          remainingMs > 0;
       String number(String key, int decimals) =>
           t[key] is num ? (t[key] as num).toStringAsFixed(decimals) : '—';
       final signal = switch (t['signal']) {
@@ -132,15 +138,31 @@ class _TrainingPageState extends State<TrainingPage> {
               ? SafeArea(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: FilledButton.icon(
-                      onPressed: manual['stopped'] == true || c.manualStopping
-                          ? null
-                          : () => c.manualAction(
-                              'stopManualTest',
-                              expectedSessionId: sessionId,
-                            ),
-                      icon: const Icon(Icons.stop_circle),
-                      label: const Text('Detener prueba'),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            onPressed: canRequest
+                                ? () => _requestSlope(0, sessionId)
+                                : null,
+                            child: const Text('Solicitar 0 %'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed:
+                                manual['stopped'] == true || c.manualStopping
+                                ? null
+                                : () => c.manualAction(
+                                    'stopManualTest',
+                                    expectedSessionId: sessionId,
+                                  ),
+                            icon: const Icon(Icons.stop_circle),
+                            label: const Text('Detener control'),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 )
@@ -373,7 +395,7 @@ class _TrainingPageState extends State<TrainingPage> {
                                 ),
                           )
                         : null,
-                    child: const Text('Solicitar 0 %'),
+                    child: const Text('LLANO 0 %'),
                   ),
                   OutlinedButton(
                     onPressed: canRequest && stepBasePercent < 1

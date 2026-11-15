@@ -238,7 +238,7 @@ void main() {
       expect(find.text('00:01:01'), findsOneWidget);
       expect(find.text('Velocidad'), findsOneWidget);
       expect(find.text('80 RPM'), findsOneWidget);
-      expect(find.text('Pendiente solicitada: 0,5 %'), findsOneWidget);
+      expect(find.text('Pendiente ordenada: +0,5 %'), findsOneWidget);
       expect(find.text('Orden enviada a la API ANT: 0,5 %'), findsOneWidget);
       expect(
         find.text('Aplicación física no confirmada por el protocolo.'),

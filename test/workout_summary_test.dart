@@ -25,7 +25,8 @@ void main() {
           ),
         ),
       );
-      expect(find.text('Pendiente solicitada: 1,0 %'), findsOneWidget);
+      expect(find.text('Pendiente ordenada: +0,5 %'), findsOneWidget);
+      expect(find.text('Seleccionada: +1,0 %'), findsOneWidget);
       expect(find.text('Orden enviada a la API ANT: 0,5 %'), findsOneWidget);
       expect(
         find.text('Última solicitud rechazada; no se ha enviado esa orden.'),

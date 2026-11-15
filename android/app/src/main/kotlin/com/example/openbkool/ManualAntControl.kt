@@ -1,8 +1,23 @@
 package com.example.openbkool
 
+/** Operational policy is deliberately separate from offline protocol candidates.
+ * Raising either bound requires reviewed physical transmission and stop evidence. */
+internal object ManualControlPolicy {
+    const val MAX_PERCENT = 1.0
+    const val STEP_PERCENT = 0.5
+    const val MAX_DURATION_MS = 30000L
+}
+
 /** Only the three values supported by the first physical experiment. No Float truncation. */
 internal fun encodeManualSlope(percent: Double): ByteArray {
-    require(percent.isFinite() && percent in listOf(0.0, 0.5, 1.0)) { "Solo 0 %, 0,5 % o 1 %" }
+    require(percent.isFinite() && percent >= 0 && percent <= ManualControlPolicy.MAX_PERCENT &&
+        percent / ManualControlPolicy.STEP_PERCENT == (percent / ManualControlPolicy.STEP_PERCENT).toInt().toDouble()) { "Solo 0 %, 0,5 % o 1 %" }
+    return encodeSlopeCandidate(percent)
+}
+
+/** Offline encoding evidence only: never bypass the operational gate above. */
+internal fun encodeSlopeCandidate(percent: Double): ByteArray {
+    require(percent.isFinite() && percent >= 0 && percent <= 2 && percent * 2 == (percent * 2).toInt().toDouble())
     val grade = 20000 + (percent * 100).toInt()
     return byteArrayOf(0x33, -1, -1, -1, -1, grade.toByte(), (grade shr 8).toByte(), -1)
 }
@@ -40,13 +55,18 @@ internal class ManualAntControl(
     private val emit: (Map<String, Any?>) -> Unit,
     private val describeError: (Exception) -> Map<String, Any?> = { mapOf("type" to it.javaClass.name, "message" to it.message) },
 ) {
-    companion object { const val MAX_TEST_MS = 30000L; const val DRAIN_MS = 1500L }
+    companion object { const val MAX_TEST_MS = ManualControlPolicy.MAX_DURATION_MS; const val DRAIN_MS = 1500L }
     private var enabled = false
     private var everEnabled = false
     private var stopped = false
     private var faulted = false
     private var deadline: Long? = null
     private var lastSubmitted: Double? = null
+    private var lastRequested: Double? = null
+    private var lastApiSuccess: Map<String, Any?>? = null
+    private var lastManualApiSuccess: Map<String, Any?>? = null
+    private var lastStopCommand: Map<String, Any?>? = null
+    private var lastApiError: Map<String, Any?>? = null
     private var lastAttemptAt: Long? = null
     private var sequence = 0
     private var attempts = 0
@@ -73,6 +93,7 @@ internal class ManualAntControl(
     fun request(percent: Double): Map<String, Any?> {
         attempts++
         val value = percent.takeIf { it.isFinite() }
+        lastRequested = value
         event("request", mapOf("attempt" to attempts, "requestedPercent" to value))
         val bytes = try { encodeManualSlope(percent) } catch (_: IllegalArgumentException) {
             return event("rejected", mapOf("reason" to "invalid_slope", "attempt" to attempts))
@@ -95,11 +116,11 @@ internal class ManualAntControl(
         return try {
             transport(bytes.copyOf(), stopping)
             lastSubmitted = percent
-            event("api_returned", fields + mapOf("apiReturned" to true, "apiResult" to "void_return_no_delivery_confirmation"))
+            event("api_returned", fields + mapOf("apiReturned" to true, "apiResult" to "void_return_no_delivery_confirmation")).also { lastApiSuccess = it; if (stopping) lastStopCommand = it else lastManualApiSuccess = it }
         } catch (error: Exception) {
             faulted = true; enabled = false
             val details = try { describeError(error) } catch (_: Exception) { mapOf("type" to error.javaClass.name, "message" to error.message) }
-            event("api_error", fields + mapOf("error" to details))
+            event("api_error", fields + mapOf("error" to details)).also { lastApiError = it; if (stopping) lastStopCommand = it }
         }
     }
     /** Exactly one zero attempt, only after activation and with a still usable link.
@@ -136,7 +157,10 @@ internal class ManualAntControl(
             "stopped" to stopped, "faulted" to faulted, "eligible" to reasons.isEmpty(),
             "unavailableReason" to reasons.firstOrNull(), "blockingReasons" to reasons,
             "link" to current.toMap(), "remainingMs" to deadline?.let { (it - now).coerceAtLeast(0) },
-            "maxDurationMs" to MAX_TEST_MS, "lastSubmittedPercent" to lastSubmitted,
+            "maxDurationMs" to MAX_TEST_MS, "operationalMaxPercent" to ManualControlPolicy.MAX_PERCENT, "stepPercent" to ManualControlPolicy.STEP_PERCENT,
+            "continuousControlEnabled" to false, "lastRequestedPercent" to lastRequested,
+            "lastManualApiSuccess" to lastManualApiSuccess, "lastStopCommand" to lastStopCommand,
+            "lastApiSuccess" to lastApiSuccess, "lastApiError" to lastApiError, "lastSubmittedPercent" to lastSubmitted,
             "attempts" to attempts, "pendingCommands" to 0, "stopResult" to stopResult,
             "lastResult" to lastResult, "physicalApplication" to "unconfirmed", "resistanceAfterClose" to "unknown")
     }

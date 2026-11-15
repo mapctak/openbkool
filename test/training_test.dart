@@ -315,7 +315,7 @@ void main() {
             .onPressed,
         isNull,
       );
-      await tester.tap(find.text('Detener prueba'));
+      await tester.tap(find.text('Detener control'));
       await tester.pumpAndSettle();
       expect(calls.last.method, 'stopManualTest');
       expect(c.snapshot['resourcesReleased'], true);

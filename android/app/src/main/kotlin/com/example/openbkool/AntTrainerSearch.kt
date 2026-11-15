@@ -122,6 +122,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         @Volatile private var generation = 0
         private var stage = "starting"
         private var status = "running"
+        private var reportSequence = 0L
         private val startedAt = now()
         val id = java.util.UUID.randomUUID().toString()
         private var stopping = false
@@ -300,7 +301,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                         "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
             }
             val report = mapOf(
-                "controlDiagnosticsVersion" to 2,
+                "controlDiagnosticsVersion" to 3,
+                "reportSequence" to ++reportSequence,
                 "channelIdentity" to mapOf("selected" to target.toMap(), "configured" to configuredChannelId,
                     "adapterReadback" to adapterChannelId, "lastReceived" to receivedChannelId,
                     "allMatch" to channelIdentitiesMatch(target, configuredChannelId, adapterChannelId, receivedChannelId),

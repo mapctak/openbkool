@@ -31,9 +31,10 @@ class SlopePresentation {
     required this.unrecordedIntent,
     required this.rejected,
     this.stopResult,
+    this.apiError,
   });
   final num? requested, apiPercent;
-  final String? apiEvent, stopResult;
+  final String? apiEvent, stopResult, apiError;
   final bool apiIsStop,
       finished,
       expired,
@@ -56,7 +57,7 @@ class SlopePresentation {
         ? intent
         : null;
     num? requested, apiPercent;
-    String? apiEvent, stopReason;
+    String? apiEvent, stopReason, apiError;
     bool apiStop = false, newerRequest = false, newerApi = false;
     for (var i = 0; i < events.length; i++) {
       final e = events[i] as Map;
@@ -72,15 +73,38 @@ class SlopePresentation {
         }
       }
       if (e['event'] == 'api_returned' || e['event'] == 'api_error') {
-        apiEvent = e['event'] as String;
-        apiPercent = valid ? value : null;
-        apiStop = e['stopRequest'] == true;
+        if (e['event'] == 'api_returned' && e['stopRequest'] != true) {
+          apiEvent = 'api_returned';
+          apiPercent = valid ? value : null;
+          apiStop = e['stopRequest'] == true;
+        } else if (e['event'] == 'api_error') {
+          apiError =
+              'Error al enviar la orden a ANT: ${e['error'] ?? 'consulta el diagnóstico'}';
+        }
         if (activeIntent != null && i >= activeIntent.eventCount) {
           newerApi = true;
         }
       }
       if (e['event'] == 'stop_requested') stopReason = e['reason'] as String?;
     }
+    // Native snapshot is independent of RX pages and event history retention.
+    if (manual['lastRequestedPercent'] is num) {
+      requested = manual['lastRequestedPercent'] as num;
+    }
+    final lastSuccess = manual['lastApiSuccess'] as Map?;
+    final success =
+        manual['lastManualApiSuccess'] as Map? ??
+        (lastSuccess?['stopRequest'] != true ? lastSuccess : null);
+    if (success != null) {
+      apiEvent = 'api_returned';
+      apiPercent = success['requestedPercent'] as num?;
+      apiStop = success['stopRequest'] == true;
+    }
+    final error = manual['lastApiError'] as Map?;
+    if (error != null) {
+      apiError = 'Error al enviar la orden a ANT: ${error['error']}';
+    }
+    if (report['clientError'] != null) apiError = '${report['clientError']}';
     if (activeIntent != null && !newerRequest) requested = activeIntent.percent;
     final stopped = manual['stopped'] == true;
     // A missing request history is unknown, not an implied manual request of zero.
@@ -100,6 +124,7 @@ class SlopePresentation {
         (stopped && report['running'] == true);
     return SlopePresentation(
       requested: requested,
+      apiError: apiError,
       apiPercent: apiPercent,
       apiEvent: apiEvent,
       apiIsStop: apiStop,

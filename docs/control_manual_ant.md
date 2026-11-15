@@ -354,3 +354,15 @@ iniciar una **sesión nueva** y comprobar la marca v2/Kotlin 2, expandir condici
 y verificar los cuatro ID iguales a 30064/112/5. El texto exacto y los eventos
 `manual_availability` del JSON nuevo identificarán cualquier bloqueo restante,
 incluida la página 0x50 pendiente. Ninguna prueba automatizada usa radio real.
+
+## Actualización 1.1.2: estado de pendiente y límites futuros
+
+Véase [control_manual_1_1_2.md](control_manual_1_1_2.md): estado canónico de
+solicitud/éxito/error, controles de parada visibles y preparación de configuración.
+Se conservan 30 segundos y +1 %; +2 % solo se prueba como candidato sin transporte.
+
+## Actualización 1.1.3: pendiente ordenada y sincronización
+
+[pendiente_ordenada_1_1_3.md](pendiente_ordenada_1_1_3.md) detalla el recorrido
+Flutter/Kotlin, la separación del último éxito manual y la parada, y el bloqueo
+de snapshots atrasados. Conserva rango, temporizador y todas las barreras.

@@ -154,10 +154,20 @@ class ManualOrderSummary extends StatelessWidget {
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               Text(
-                '${state.finished || state.stopping || state.expired ? 'Última pendiente solicitada' : 'Pendiente solicitada'}: ${SlopePresentation.percent(state.requested)} %',
+                '${state.finished || state.stopping || state.expired ? 'Última pendiente ordenada' : 'Pendiente ordenada'}: ${state.apiPercent != null && state.apiPercent! > 0 ? '+' : ''}${SlopePresentation.percent(state.apiPercent)} %',
                 key: const ValueKey('requestedSlope'),
-                style: Theme.of(context).textTheme.titleLarge,
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
+              Text(
+                'Seleccionada: ${state.requested != null && state.requested! > 0 ? '+' : ''}${SlopePresentation.percent(state.requested)} %',
+                key: const ValueKey('selectedSlope'),
+              ),
+              if (state.finished &&
+                  state.stopResult == 'zero_api_returned_unconfirmed')
+                const Text(
+                  'Control finalizado · Se solicitó 0 % · Resistencia actual desconocida',
+                ),
               if (state.pending)
                 const Text('Solicitud pendiente de respuesta del controlador.'),
               if (state.unrecordedIntent)
@@ -166,6 +176,11 @@ class ManualOrderSummary extends StatelessWidget {
                 ),
               const SizedBox(height: 8),
               Text(state.apiStatus, key: const ValueKey('slopeApiStatus')),
+              if (state.apiError != null)
+                Text(
+                  state.apiError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
               if (state.rejected)
                 const Text(
                   'Última solicitud rechazada; no se ha enviado esa orden.',

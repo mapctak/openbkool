@@ -53,4 +53,22 @@ void main() {
     expect(state.stopStatus, contains('error'));
     expect(state.apiStatus, 'Sin orden enviada a ANT');
   });
+  test('native state survives event history loss and keeps successful API value after error', () {
+    final state = SlopePresentation.fromReport({
+      'manualControl': {
+        'lastRequestedPercent': 1.0,
+        'lastSubmittedPercent': 0.5,
+        'lastApiSuccess': {'requestedPercent': 0.5, 'stopRequest': false},
+        'lastApiError': {
+          'requestedPercent': 1.0,
+          'error': {'message': 'radio lost'},
+        },
+      },
+      'manualControlEvents': [],
+    });
+    expect(state.requested, 1.0);
+    expect(state.apiPercent, 0.5);
+    expect(state.apiStatus, contains('0,5'));
+    expect(state.apiError, contains('radio lost'));
+  });
 }

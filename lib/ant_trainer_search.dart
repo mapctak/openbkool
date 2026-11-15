@@ -25,7 +25,19 @@ class AntTrainerSearchController extends ChangeNotifier {
   }
 
   void _update(dynamic value) {
-    snapshot = Map<String, Object?>.from(value as Map);
+    final incoming = Map<String, Object?>.from(value as Map);
+    final sequence = incoming['reportSequence'];
+    final currentSequence = snapshot['reportSequence'];
+    // EventChannel and MethodChannel can deliver snapshots in different order.
+    // Never let an older RX snapshot roll back an accepted manual command.
+    if (incoming['sessionId'] != null &&
+        incoming['sessionId'] == snapshot['sessionId'] &&
+        sequence is num &&
+        currentSequence is num &&
+        sequence < currentSequence) {
+      return;
+    }
+    snapshot = incoming;
     if (_ready != null && !_ready!.isCompleted) _ready!.complete();
     _notify();
   }
@@ -62,6 +74,7 @@ class AntTrainerSearchController extends ChangeNotifier {
         ...snapshot,
         if (mode == 'training' || mode == 'training_connected') ...{
           'sessionId': null,
+          'reportSequence': null,
           'manualControl': <String, Object?>{
             'enabled': false,
             'eligible': false,
