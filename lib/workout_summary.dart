@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 
 import 'trainer_session.dart';
+import 'slope_presentation.dart';
 
 class WorkoutSummary extends StatelessWidget {
   const WorkoutSummary({
     super.key,
     required this.report,
     required this.trainer,
+    this.slopeIntent,
   });
+  final SlopeUiIntent? slopeIntent;
   final Map<String, Object?> report;
   final SavedTrainer trainer;
   @override
@@ -80,6 +83,7 @@ class WorkoutSummary extends StatelessWidget {
             ),
           ),
         ),
+        ManualOrderSummary(report: report, intent: slopeIntent),
         LayoutBuilder(
           builder: (context, box) => Wrap(
             spacing: 8,
@@ -129,49 +133,51 @@ class WorkoutSummary extends StatelessWidget {
 }
 
 class ManualOrderSummary extends StatelessWidget {
-  const ManualOrderSummary({super.key, required this.report});
+  const ManualOrderSummary({super.key, required this.report, this.intent});
   final Map<String, Object?> report;
+  final SlopeUiIntent? intent;
   @override
   Widget build(BuildContext context) {
-    final manual = report['manualControl'] as Map? ?? const {};
-    num? requested;
-    String? api;
-    num? apiPercent;
-    for (final event in report['manualControlEvents'] as List? ?? const []) {
-      if ((event['event'] == 'request' || event['event'] == 'api_attempt') &&
-          event['requestedPercent'] is num) {
-        requested = event['requestedPercent'] as num;
-      }
-      if (event['event'] == 'api_returned' || event['event'] == 'api_error') {
-        api = event['event'] as String;
-        apiPercent = event['requestedPercent'] as num?;
-      }
-    }
-    final percent = requested ?? manual['lastSubmittedPercent'] as num?;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Pendiente solicitada: ${percent == null ? '—' : percent.toStringAsFixed(1).replaceAll('.', ',')} %',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              api == 'api_returned'
-                  ? 'Orden enviada a la API ANT: ${apiPercent?.toStringAsFixed(1).replaceAll('.', ',') ?? '—'} %'
-                  : api == 'api_error'
-                  ? 'Error al enviar la orden a ANT'
-                  : 'Sin orden enviada a ANT',
-            ),
-            if ((manual['lastResult'] as Map?)?['event'] == 'rejected')
-              const Text(
-                'Última solicitud rechazada; no se ha enviado esa orden.',
+    final state = SlopePresentation.fromReport(report, intent: intent);
+    return Semantics(
+      liveRegion: true,
+      child: Card(
+        key: const ValueKey('slopeSummary'),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (state.trialStatus != null)
+                Text(
+                  state.trialStatus!,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+              Text(
+                '${state.finished || state.stopping || state.expired ? 'Última pendiente solicitada' : 'Pendiente solicitada'}: ${SlopePresentation.percent(state.requested)} %',
+                key: const ValueKey('requestedSlope'),
+                style: Theme.of(context).textTheme.titleLarge,
               ),
-            const Text('Aplicación física no confirmada por el protocolo.'),
-          ],
+              if (state.pending)
+                const Text('Solicitud pendiente de respuesta del controlador.'),
+              if (state.unrecordedIntent)
+                const Text(
+                  'Solicitud sin registro en el controlador. Revisa el diagnóstico; no se confirma su envío.',
+                ),
+              const SizedBox(height: 8),
+              Text(state.apiStatus, key: const ValueKey('slopeApiStatus')),
+              if (state.rejected)
+                const Text(
+                  'Última solicitud rechazada; no se ha enviado esa orden.',
+                ),
+              if (state.stopStatus != null) Text(state.stopStatus!),
+              const Text('Aplicación física no confirmada por el protocolo.'),
+              if (state.finished || state.stopping || state.expired)
+                const Text(
+                  'No se asume que el rodillo haya vuelto físicamente a 0 %.',
+                ),
+            ],
+          ),
         ),
       ),
     );

@@ -238,6 +238,12 @@ void main() {
       expect(find.text('00:01:01'), findsOneWidget);
       expect(find.text('Velocidad'), findsOneWidget);
       expect(find.text('80 RPM'), findsOneWidget);
+      expect(find.text('Pendiente solicitada: 0,5 %'), findsOneWidget);
+      expect(find.text('Orden enviada a la API ANT: 0,5 %'), findsOneWidget);
+      expect(
+        find.text('Aplicación física no confirmada por el protocolo.'),
+        findsOneWidget,
+      );
       await tester.scrollUntilVisible(
         find.widgetWithText(OutlinedButton, '+'),
         200,
@@ -249,12 +255,6 @@ void main() {
             .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '+'))
             .onPressed,
         isNull,
-      );
-      expect(find.text('Pendiente solicitada: 0,5 %'), findsOneWidget);
-      expect(find.text('Orden enviada a la API ANT: 0,5 %'), findsOneWidget);
-      expect(
-        find.text('Aplicación física no confirmada por el protocolo.'),
-        findsOneWidget,
       );
       expect(training.starts, isEmpty);
       expect(tester.takeException(), isNull);

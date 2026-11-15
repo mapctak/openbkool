@@ -187,3 +187,8 @@ Resultados locales del 2026-11-15:
 - Persisten avisos previos de deprecación Kotlin/AGP; no impiden las pruebas ni
   la compilación. No se realizaron transmisiones o pruebas físicas durante el
   rediseño. La revisión visual usa fuentes/icono de la aplicación y datos simulados.
+
+Actualización de presentación 1.1.1: el indicador de pendiente se unifica en la
+zona principal y el botón de vuelta a cero se etiqueta «Solicitar 0 %». Se separan
+intención manual, retorno de API y parada, sin cambiar ANT. Véase
+[causa y corrección de los indicadores](pendiente_interfaz_1_1_1.md).

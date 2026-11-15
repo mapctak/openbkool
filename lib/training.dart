@@ -7,6 +7,7 @@ import 'ant_trainer_search.dart';
 import 'manual_control_status.dart';
 import 'trainer_session.dart';
 import 'workout_summary.dart';
+import 'slope_presentation.dart';
 
 class TrainingPage extends StatefulWidget {
   const TrainingPage({
@@ -45,6 +46,27 @@ class _TrainingPageState extends State<TrainingPage> {
     }
   }
 
+  SlopeUiIntent? _slopeIntent;
+  Future<void> _requestSlope(double percent, String? sessionId) async {
+    final c = widget.controller;
+    if (c.commandBusy) return;
+    final intent = SlopeUiIntent(
+      sessionId: sessionId,
+      percent: percent,
+      eventCount:
+          (c.snapshot['manualControlEvents'] as List? ?? const []).length,
+    );
+    setState(() => _slopeIntent = intent);
+    await c.manualAction(
+      'setManualSlope',
+      percent: percent,
+      expectedSessionId: sessionId,
+    );
+    if (mounted && identical(_slopeIntent, intent)) {
+      setState(() => _slopeIntent = intent.completed());
+    }
+  }
+
   String keyOf(Map d) =>
       '${d['deviceNumber']}:${d['deviceType']}:${d['transmissionType']}';
   @override
@@ -78,9 +100,12 @@ class _TrainingPageState extends State<TrainingPage> {
           ? '${value['deviceNumber']}/${value['deviceType']}/${value['transmissionType']}'
           : 'pendiente';
       final sessionId = r['sessionId'] as String?;
-      final submitted =
+      final stepBasePercent =
           (manual['lastSubmittedPercent'] as num?)?.toDouble() ?? 0;
-      final remaining = ((manual['remainingMs'] as num?)?.toInt() ?? 0) ~/ 1000;
+      final remainingMs = (manual['remainingMs'] as num?)?.toInt();
+      final remaining = (remainingMs ?? 0) ~/ 1000;
+      final canRequest =
+          enabled && !c.commandBusy && remainingMs != null && remainingMs > 0;
       String number(String key, int decimals) =>
           t[key] is num ? (t[key] as num).toStringAsFixed(decimals) : '—';
       final signal = switch (t['signal']) {
@@ -129,6 +154,7 @@ class _TrainingPageState extends State<TrainingPage> {
                 WorkoutSummary(
                   report: r,
                   trainer: SavedTrainer.fromMap(selected),
+                  slopeIntent: _slopeIntent,
                 ),
               if (!widget.simple) ...[
                 const Text(
@@ -311,19 +337,15 @@ class _TrainingPageState extends State<TrainingPage> {
                 ),
               if (enabled) Text('Tiempo restante: $remaining s'),
               if (!widget.simple)
-                Text(
-                  'Última pendiente entregada a la API: ${manual['lastSubmittedPercent'] ?? 'ninguna'} %. Aplicación física SIN confirmar.',
-                ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                ManualOrderSummary(report: r, intent: _slopeIntent),
+              Wrap(
+                alignment: WrapAlignment.spaceEvenly,
+                spacing: 8,
+                runSpacing: 8,
                 children: [
                   OutlinedButton(
-                    onPressed: enabled && !c.commandBusy && submitted > 0
-                        ? () => c.manualAction(
-                            'setManualSlope',
-                            percent: submitted - 0.5,
-                            expectedSessionId: sessionId,
-                          )
+                    onPressed: canRequest && stepBasePercent > 0
+                        ? () => _requestSlope(stepBasePercent - 0.5, sessionId)
                         : null,
                     style: widget.simple
                         ? OutlinedButton.styleFrom(
@@ -338,32 +360,24 @@ class _TrainingPageState extends State<TrainingPage> {
                     child: const Text('−'),
                   ),
                   OutlinedButton(
-                    onPressed: enabled && !c.commandBusy
-                        ? () => c.manualAction(
-                            'setManualSlope',
-                            percent: 0,
-                            expectedSessionId: sessionId,
-                          )
+                    onPressed: canRequest
+                        ? () => _requestSlope(0, sessionId)
                         : null,
                     style: widget.simple
                         ? OutlinedButton.styleFrom(
                             minimumSize: const Size(80, 64),
                             textStyle: Theme.of(context).textTheme.titleLarge
                                 ?.copyWith(
-                                  fontSize: 24,
+                                  fontSize: 18,
                                   fontWeight: FontWeight.bold,
                                 ),
                           )
                         : null,
-                    child: const Text('0 %'),
+                    child: const Text('Solicitar 0 %'),
                   ),
                   OutlinedButton(
-                    onPressed: enabled && !c.commandBusy && submitted < 1
-                        ? () => c.manualAction(
-                            'setManualSlope',
-                            percent: submitted + 0.5,
-                            expectedSessionId: sessionId,
-                          )
+                    onPressed: canRequest && stepBasePercent < 1
+                        ? () => _requestSlope(stepBasePercent + 0.5, sessionId)
                         : null,
                     style: widget.simple
                         ? OutlinedButton.styleFrom(
@@ -379,7 +393,6 @@ class _TrainingPageState extends State<TrainingPage> {
                   ),
                 ],
               ),
-              if (widget.simple) ManualOrderSummary(report: r),
               const Text(
                 'Detener prueba solicita 0 % solo si la radio sigue disponible y después cierra el canal. Ni enviar 0 % ni cerrar garantizan una resistencia segura. No hay recuperación automática del control: reconecta y habilita una nueva prueba.',
               ),

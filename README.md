@@ -56,3 +56,5 @@ pérdida de señal. Al finalizar permite copiar el registro CSV. El control real
 - [Preparación bidireccional ANT V1, sin comandos, y plan de primera prueba](docs/control_ant_preparacion.md).
 
 - [Primera prueba manual de pendiente ANT: activación, límites, parada y JSON](docs/control_manual_ant.md).
+
+- [Pendiente solicitada, envío a ANT y parada: corrección visual 1.1.1](docs/pendiente_interfaz_1_1_1.md).
