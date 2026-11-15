@@ -142,14 +142,21 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private fun manualLink(): ManualControlLink {
             val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime())
             val device = devices.values.firstOrNull { it["deviceNumber"] == target.number && it["deviceType"] == target.type && it["transmissionType"] == target.transmission }
-            return ManualControlLink(dedicated && opened && !radioDead && !finished,
+            return ManualControlLink(dedicated,
                 identityVerified, device?.get("manufacturerId") as? Int, device?.get("modelNumber") as? Int,
                 t?.get("signalAgeMs") as? Long,
-                t?.get("speedKmh") != null && t["powerW"] != null && t["cadenceRpm"] != null)
+                t?.get("speedKmh") != null && t["powerW"] != null && t["cadenceRpm"] != null,
+                channelOpen = opened, radioAvailable = !radioDead, sessionActive = !finished,
+                activeIdentityMatches = channelIdentitiesMatch(target, configuredChannelId, adapterChannelId, receivedChannelId))
         }
         private val dedicated = mode == "training_connected"
         private val control = ManualSlopePreparation(target)
         private var identityVerified = false
+        private var configuredChannelId: Map<String, Any?>? = null
+        private var adapterChannelId: Map<String, Any?>? = null
+        private var receivedChannelId: Map<String, Any?>? = null
+        private var identityReadbackError: Map<String, Any?>? = null
+        private var lastManualAvailability: String? = null
         private val telemetry = if (training) BkoolTelemetry(android.os.SystemClock.elapsedRealtime(), target) else null
         private var csvFile: String? = null
         private var csv: java.io.BufferedWriter? = null
@@ -260,10 +267,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             }
             if (training || mode == "bkool_v1") beginV1() else beginFecSearch()
         }
-        private fun event(type: String, message: String, error: Exception? = null) {
+        private fun event(type: String, message: String, error: Exception? = null, details: Map<String, Any?>? = null) {
             if (training && events.size >= 500) { events.removeFirst(); droppedEvents++ }
             events.addLast(mapOf("timestamp" to now(), "event" to type, "stage" to stage,
-                "message" to message, "errorType" to error?.javaClass?.simpleName))
+                "message" to message, "errorType" to error?.javaClass?.simpleName, "details" to details))
             schedulePublish()
         }
         private fun fail(where: String, error: Exception) {
@@ -283,8 +290,22 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         }
         private fun publish() {
             if (active !== this) return
+            val manualState = manual.snapshot()
+            val signature = "${manualState["eligible"]}:${manualState["blockingReasons"]}"
+            if (training && lastManualAvailability != signature) {
+                lastManualAvailability = signature
+                event("manual_availability", "Control elegible=${manualState["eligible"]}; bloqueos=${manualState["blockingReasons"]}",
+                    details = mapOf("manualControl" to manualState, "selectedDevice" to target.toMap(),
+                        "configuredChannelId" to configuredChannelId, "adapterChannelId" to adapterChannelId,
+                        "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
+            }
             val report = mapOf(
-                "sessionId" to id, "manualControl" to manual.snapshot(), "manualControlEvents" to manualEvents.toList(),
+                "controlDiagnosticsVersion" to 2,
+                "channelIdentity" to mapOf("selected" to target.toMap(), "configured" to configuredChannelId,
+                    "adapterReadback" to adapterChannelId, "lastReceived" to receivedChannelId,
+                    "allMatch" to channelIdentitiesMatch(target, configuredChannelId, adapterChannelId, receivedChannelId),
+                    "readbackError" to identityReadbackError),
+                "sessionId" to id, "manualControl" to manualState, "manualControlEvents" to manualEvents.toList(),
                 "selectedDevice" to target.toMap(),
                 "channelMode" to if (dedicated) "dedicated_bidirectional_manual_opt_in" else "background_receive_only",
                 "connectionState" to if (finished) "closed" else if (identityVerified) "identity_verified" else "waiting_for_identity",
@@ -474,7 +495,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                         acquired.assign(ChannelType.SLAVE_RECEIVE_ONLY, ExtendedAssignment().apply { enableBackgroundScanning() })
                         assigned = true
                     }
-                    override fun setId(number: Int, type: Int, transmission: Int) { acquired.setChannelId(ChannelId(number, type, transmission)) }
+                    override fun setId(number: Int, type: Int, transmission: Int) {
+                        acquired.setChannelId(ChannelId(number, type, transmission))
+                        configuredChannelId = mapOf("deviceNumber" to number, "deviceType" to type, "transmissionType" to transmission)
+                    }
                     override fun setPeriod(period: Int) { acquired.setPeriod(period) }
                     override fun setRfFrequency(rf: Int) { acquired.setRfFrequency(rf) }
                     override fun enableExtendedIdentity() {
@@ -504,6 +528,18 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 if (dedicated) configureV1Dedicated(configuration, target, actualCaps.rfFrequencyMin, actualCaps.rfFrequencyMax, operations)
                 else configureV1Background(configuration, V1ChannelCapabilities(actualCaps.hasBackgroundScanning(), actualCaps.hasExtendedAssign(),
                     actualCaps.rfFrequencyMin, actualCaps.rfFrequencyMax), operations)
+                if (dedicated) {
+                    try {
+                        adapterChannelId = operations.run("connection.requestChannelId", summarize = { it }) {
+                            val value = acquired.requestChannelId().channelId
+                            mapOf("deviceNumber" to value.deviceNumber, "deviceType" to value.deviceType, "transmissionType" to value.transmissionType)
+                        }
+                    } catch (error: Exception) {
+                        identityReadbackError = antErrorDetails(error)
+                        event("channel_identity_readback_error", "No se puede verificar el ID del canal; control bloqueado", error, identityReadbackError)
+                        if (error is android.os.RemoteException) { radioDead = true; throw error }
+                    }
+                }
                 event("v1_listening", "Escucha V1 activa; modo=$mode; destino=$target; control manual desactivado hasta habilitación explícita")
                 if (training) {
                     phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
@@ -523,7 +559,13 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
 
         private fun receive(type: String, messageId: Int, content: ByteArray) {
             val decoded = decodeAntFrame(messageId, content)
-            if (training && decoded != null && !telemetry!!.accepts(decoded)) return
+            if (training && decoded != null) {
+                receivedChannelId = mapOf("deviceNumber" to decoded.deviceNumber, "deviceType" to decoded.deviceType, "transmissionType" to decoded.transmissionType)
+                if (!telemetry!!.accepts(decoded)) {
+                    event("channel_identity_mismatch", "Paquete ajeno al rodillo seleccionado; ignorado", details = receivedChannelId)
+                    return
+                }
+            }
             if (training && decoded != null) {
                 if (!identityVerified) { identityVerified = true; event("identity_verified", "Identidad extendida recibida coincide con $target") }
                 telemetry!!.receive(decoded, android.os.SystemClock.elapsedRealtime())

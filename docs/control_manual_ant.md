@@ -53,7 +53,7 @@ por ensayo automático. Esta versión no asegura que una orden sea efectiva.
 
 ## Uso y activación
 
-1. Conectar con «Conectar y entrenar (sin comandos)». Abrir la pantalla o el canal
+1. Conectar con «Iniciar entrenamiento» (canal específico). Abrir la pantalla o el canal
    no activa el control y no transmite pendiente 0 % por defecto.
 2. Esperar identidad extendida **exacta**, fabricante 67 y modelo 22 recibidos en
    esta sesión, además de telemetría válida. El sistema exige última página del
@@ -187,3 +187,170 @@ Resultados locales del 2026-11-13:
 - Los avisos de Gradle corresponden a deprecaciones previas de Kotlin/AGP.
   No se instaló la APK, no se abrió una radio y no se ejecutaron comandos reales
   durante las pruebas automatizadas ni durante este desarrollo.
+
+## Corrección del bloqueo de activación (Galaxy S20)
+
+El JSON aportado posteriormente por el usuario (`updatedAt`:
+`2026-11-13T18:22:25.393Z`) confirma:
+
+```json
+{
+  "mode": "training",
+  "channelMode": "background_receive_only",
+  "connectionState": "identity_verified",
+  "manualControl": {
+    "eligible": false,
+    "unavailableReason": "dedicated_identity_required",
+    "enabled": false,
+    "stopped": false,
+    "faulted": false,
+    "remainingMs": null
+  }
+}
+```
+
+La identidad y la telemetría eran correctas (última página hace 202 ms), pero
+el botón principal «Iniciar entrenamiento» solicitaba `training`, que abre
+`SLAVE_RECEIVE_ONLY` en background. `ManualControlLink.dedicated` permanecía
+falso durante toda esa sesión por diseño. No era un timeout, falta de confirmación
+ni fallo del flujo EventChannel: la app estaba solicitando el modo equivocado
+para la intención de entrenar con control. El fallo era de selección del modo
+en la interfaz, no de la restricción que impedía transmitir por ese canal.
+
+**Segundo bloqueo presente en el mismo JSON:** `devices` solo contenía la página
+`0x51` (software/serial). No había `manufacturerId` ni `modelNumber`, ni una
+página `0x50` en los mensajes/eventos aportados. Abrir el canal específico
+resuelve el primer bloqueo, pero **no autoriza a dar por recibido el modelo**.
+Si la nueva sesión no recibe página 0x50 con fabricante 67/modelo 22, la casilla
+seguirá correctamente bloqueada y explicará ese motivo. No se copia información
+de capturas antiguas ni se envían solicitudes ANT nuevas para obtenerla.
+
+Correcciones implementadas:
+
+- «Iniciar entrenamiento» solicita ahora `training_connected`, con la identidad
+  completa seleccionada. «Solo telemetría (sin control)» conserva el antiguo modo
+  `training`. El cambio de modo requiere finalizar primero; no se reasigna un
+  canal abierto ni se habilita/transmite control automáticamente.
+- La casilla usa `ManualActivationStatus`: entrenamiento activo, UUID recibido,
+  sin operación pendiente/cierre/fallo y decisión `eligible` confirmada por Kotlin.
+  La confirmación explícita se pide **después** de pulsarla. El temporizador no
+  tiene que haber empezado para permitir abrir ese diálogo.
+- Un texto inmediatamente debajo muestra código y explicación en español de
+  cada bloqueo, incluidos estado nativo ausente, operación en curso y temporizador.
+  «Condiciones actuales de seguridad» detalla canal/estado de apertura/radio,
+  identidad, fabricante/modelo, edad de señal, telemetría y fecha de actualización.
+- Kotlin separa canal de solo recepción, canal aún sin abrir, radio no disponible,
+  sesión cerrada e identidad pendiente. `manualControl.blockingReasons` contiene
+  **todos** los motivos y `link` sus valores reales; no se ocultan los bloqueos
+  secundarios detrás del primero. El motivo antiguo combinado se interpreta
+  con el modo explícito si aparece en un snapshot anterior.
+- `snapshot()` ya no devuelve `eligible=false` con motivo nulo para una sesión
+  parada o fallida; también informa `test_timeout` al alcanzar los 30 s antes
+  del siguiente tick. No se cambia el transporte, rango, plazo ni parada.
+- Al comenzar una nueva sesión se limpian el UUID, autorización, telemetría,
+  identificación y fechas anteriores. Se muestra «Conectando» hasta recibir el
+  nuevo estado nativo, en lugar de reutilizar una aparente autorización antigua.
+- El JSON de Entrenamiento añade `manualActivationUi` con el código mostrado,
+  disponibilidad y estados de operación/cierre de Flutter. El estado nativo
+  completo continúa en el diagnóstico y en `antTraining` del JSON general.
+
+### Cómo verificar la corrección
+
+1. Finalizar cualquier sesión abierta e instalar la APK nueva. Seleccionar
+   30064/112/5 y pulsar **Iniciar entrenamiento**.
+2. Comprobar `channelMode=dedicated_bidirectional_manual_opt_in` y que el estado
+   deja «Conectando» al llegar información nativa. No debe figurar
+   `background_receive_only` salvo que se elija expresamente «Solo telemetría».
+3. Esperar identidad, página 0x50 (67/22), señal <3 s y velocidad/potencia/cadencia
+   válidas (<10 s). El texto debe pasar a **«Condiciones cumplidas»** y habilitar
+   la casilla **sin marcarla**. Aún no se transmite ninguna orden.
+4. Si sigue gris, leer su motivo y expandir las condiciones. En particular,
+   `manufacturer_model_not_verified` requiere esperar la página 0x50 real; la
+   página 0x51 y el ID conocido no sustituyen esta comprobación. Exportar JSON
+   si no aparece esa página o persiste otro bloqueo.
+5. Para verificar solo la corrección de interfaz, no aceptar el diálogo de
+   habilitación. La prueba física de pendiente sigue requiriendo aceptación
+   expresa; se mantienen 0–1 %, 30 s y «Detener prueba».
+
+### Regresión reproducible
+
+`test/fixtures/manual_control_blocked_s20.json` conserva un subconjunto literal
+del JSON del usuario, sin inventar fabricante/modelo. Los tests reproducen la
+casilla deshabilitada con telemetría real válida y canal de solo recepción;
+comprueban el modo que solicita el botón principal, el borrado del estado antiguo,
+las actualizaciones EventChannel de bloqueado a elegible y de nuevo a bloqueado,
+y la ausencia de habilitación/envío automáticos.
+
+Las pruebas Kotlin verifican que la página 0x51 no proporciona modelo ni
+fabricante, que el modo específico por sí solo no basta y que una página 0x50
+válida permite la elegibilidad sin transmitir. Esa página procede de la captura
+anterior usada en los tests: **no** se presenta como recibida en la última
+sesión del S20. También cubren apertura, radio, fallo, parada y timeout con
+transporte falso. No se transmiten órdenes a hardware en las pruebas.
+
+Resultados de validación de esta corrección (2026-11-13):
+
+- `flutter analyze`: sin incidencias.
+- `flutter test`: 21 pruebas correctas (incluida la reproducción del JSON real).
+- `./gradlew :app:testDebugUnitTest` desde `android`: 42 pruebas correctas.
+- `flutter build apk --debug`: compilación correcta; APK en
+  `build/app/outputs/flutter-apk/app-debug.apk`.
+- `git diff --check`: correcto. Los avisos Gradle de deprecación son previos.
+- Pruebas con canales simulados y transporte falso. No se instala la APK ni se
+  envían comandos al rodillo durante esta corrección. La comprobación física
+  de la interfaz nueva y la recepción de 0x50 en una sesión nueva quedan para
+  el Galaxy S20; la validación local no sustituye esa prueba.
+
+## Diferenciar recepción, canal e instalación de la APK
+
+En la comprobación posterior el usuario sigue leyendo literalmente
+`Control no disponible: dedicated_identity_required`. Ese texto ya no existe en
+la interfaz actual: pertenece a la APK anterior. Es evidencia de una instalación
+anterior o de una actualización incompleta, no de que el ID esté necesariamente
+mal. La nueva compilación sube a **1.0.0+2 (versionCode 2)** y muestra debajo del
+bloqueo **«Diagnóstico de control v2 · Kotlin: 2»** al iniciar la sesión. Si aparece
+«Kotlin: pendiente», todavía no ha llegado el snapshot nuevo; no se debe atribuir
+un estado anterior al código nuevo. Hay que instalar la APK completa, ya que un
+hot reload de Dart no actualiza el código Kotlin del teléfono.
+
+Además se añade evidencia explícita del canal activo:
+
+- `channelIdentity.selected`: identidad seleccionada por el operador.
+- `channelIdentity.configured`: ID cuya configuración terminó correctamente.
+- `channelIdentity.adapterReadback`: ID que devuelve el adaptador mediante
+  `AntChannel.requestChannelId()` después de abrir el canal específico.
+- `channelIdentity.lastReceived`: identidad extendida del último paquete recibido.
+- `channelIdentity.allMatch`: las cuatro identidades coinciden exactamente,
+  incluidos número, tipo y transmisión. Deben ser **30064/112/5**.
+
+`requestChannelId()` consulta al adaptador ANT, según el SDK oficial: no solicita
+una página al rodillo ni envía datos de pendiente/resistencia. Se realiza una
+vez al configurar el canal específico. Si falla sin pérdida IPC, la telemetría
+puede continuar, pero el control queda bloqueado con el error completo registrado.
+Un `RemoteException` significa canal no utilizable y se conserva su cierre seguro.
+No se declara verificado un ID solo porque se haya seleccionado en Flutter.
+
+La elegibilidad exige ahora también esa coincidencia. Un dato ausente, comodín,
+un dispositivo diferente o un transmission type diferente produce
+`active_channel_identity_not_verified`. Las identidades y el posible error de
+consulta aparecen en «Condiciones actuales de seguridad» y en el JSON.
+
+Cada transición de elegibilidad se registra como `events[].event=manual_availability`
+con `details` estructurados: bloqueos, valores del enlace e identidades comparadas.
+No se genera un evento por cada milisegundo de edad de señal; el snapshot sí se
+actualiza continuamente. Esto permite distinguir recepción de telemetría, canal
+abierto/apto y autorización explícita para transmitir. Ninguna de estas lecturas
+habilita la prueba o envía automáticamente una pendiente.
+
+Validación de esta ampliación: `flutter analyze` sin incidencias, 21 pruebas
+Flutter y 44 Kotlin correctas; APK 1.0.0+2 compilada. El paquete se inspecciona
+con `aapt` para verificar `versionCode=2` y etiqueta OpenBkool. Para evitar
+confundir descargas anteriores se incluye una copia con nombre propio:
+`build/app/outputs/flutter-apk/openbkool-1.0.0-2-debug.apk`.
+
+ADB no detecta teléfonos conectados: no se ha leído la versión realmente
+instalada en el S20 ni instalado la APK durante esta ampliación. Tras instalarla,
+iniciar una **sesión nueva** y comprobar la marca v2/Kotlin 2, expandir condiciones
+y verificar los cuatro ID iguales a 30064/112/5. El texto exacto y los eventos
+`manual_availability` del JSON nuevo identificarán cualquier bloqueo restante,
+incluida la página 0x50 pendiente. Ninguna prueba automatizada usa radio real.

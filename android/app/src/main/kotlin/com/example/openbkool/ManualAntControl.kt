@@ -8,15 +8,27 @@ internal fun encodeManualSlope(percent: Double): ByteArray {
 }
 
 internal data class ManualControlLink(val dedicated: Boolean, val identityVerified: Boolean,
-    val manufacturer: Int?, val model: Int?, val signalAgeMs: Long?, val telemetryFresh: Boolean) {
-    fun reason(target: AntTrainerIdentity): String? = when {
-        target != AntTrainerIdentity(30064,112,5) -> "wrong_target"
-        !dedicated || !identityVerified -> "dedicated_identity_required"
-        manufacturer != 67 || model != 22 -> "manufacturer_model_not_verified"
-        signalAgeMs == null || signalAgeMs < 0 || signalAgeMs >= 3000 -> "signal_not_fresh"
-        !telemetryFresh -> "telemetry_not_fresh"
-        else -> null
+    val manufacturer: Int?, val model: Int?, val signalAgeMs: Long?, val telemetryFresh: Boolean,
+    val channelOpen: Boolean = true, val radioAvailable: Boolean = true, val sessionActive: Boolean = true,
+    val activeIdentityMatches: Boolean = true) {
+    fun blockingReasons(target: AntTrainerIdentity): List<String> = buildList {
+        if (target != AntTrainerIdentity(30064,112,5)) add("wrong_target")
+        if (!dedicated) add("dedicated_channel_required")
+        if (!channelOpen) add("channel_not_open")
+        if (!radioAvailable) add("radio_unavailable")
+        if (!sessionActive) add("session_closed")
+        if (dedicated && !activeIdentityMatches) add("active_channel_identity_not_verified")
+        if (!identityVerified) add("identity_not_verified")
+        if (manufacturer != 67 || model != 22) add("manufacturer_model_not_verified")
+        if (signalAgeMs == null || signalAgeMs < 0 || signalAgeMs >= 3000) add("signal_not_fresh")
+        if (!telemetryFresh) add("telemetry_not_fresh")
     }
+    fun reason(target: AntTrainerIdentity): String? = blockingReasons(target).firstOrNull()
+    fun toMap(): Map<String, Any?> = mapOf("dedicated" to dedicated, "identityVerified" to identityVerified,
+        "manufacturerId" to manufacturer, "modelNumber" to model, "signalAgeMs" to signalAgeMs,
+        "telemetryFresh" to telemetryFresh, "channelOpen" to channelOpen,
+        "radioAvailable" to radioAvailable, "sessionActive" to sessionActive, "activeIdentityMatches" to activeIdentityMatches)
+
 }
 
 /** Serial-worker state machine; injected transport is fake in every automated test. */
@@ -111,10 +123,21 @@ internal class ManualAntControl(
         stopResult = if (result["event"] == "api_returned") "zero_api_returned_unconfirmed" else "zero_api_error"
         return result["event"] == "api_returned"
     }
-    fun snapshot(): Map<String, Any?> = mapOf("enabled" to enabled, "everEnabled" to everEnabled,
-        "stopped" to stopped, "faulted" to faulted, "eligible" to (link().reason(target) == null && !stopped && !faulted),
-        "unavailableReason" to link().reason(target), "remainingMs" to deadline?.let { (it - clock()).coerceAtLeast(0) },
-        "maxDurationMs" to MAX_TEST_MS, "lastSubmittedPercent" to lastSubmitted,
-        "attempts" to attempts, "pendingCommands" to 0, "stopResult" to stopResult,
-        "lastResult" to lastResult, "physicalApplication" to "unconfirmed", "resistanceAfterClose" to "unknown")
+    fun snapshot(): Map<String, Any?> {
+        val current = link()
+        val now = clock()
+        val reasons = buildList {
+            if (faulted) add("api_fault_requires_reconnect")
+            if (stopped) add("session_stopped")
+            if (enabled && now >= deadline!!) add("test_timeout")
+            addAll(current.blockingReasons(target))
+        }
+        return mapOf("enabled" to enabled, "everEnabled" to everEnabled,
+            "stopped" to stopped, "faulted" to faulted, "eligible" to reasons.isEmpty(),
+            "unavailableReason" to reasons.firstOrNull(), "blockingReasons" to reasons,
+            "link" to current.toMap(), "remainingMs" to deadline?.let { (it - now).coerceAtLeast(0) },
+            "maxDurationMs" to MAX_TEST_MS, "lastSubmittedPercent" to lastSubmitted,
+            "attempts" to attempts, "pendingCommands" to 0, "stopResult" to stopResult,
+            "lastResult" to lastResult, "physicalApplication" to "unconfirmed", "resistanceAfterClose" to "unknown")
+    }
 }

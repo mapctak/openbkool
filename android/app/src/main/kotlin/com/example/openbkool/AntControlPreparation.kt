@@ -65,3 +65,10 @@ internal class ManualSlopePreparation(private val target: AntTrainerIdentity) {
     fun snapshot(): Map<String, Any?> = mapOf("transmissionEnabled" to false, "connectedIdentityVerified" to connected,
         "pendingCommands" to 0, "stopPolicy" to "cancel_and_close_without_reset", "resistanceAfterClose" to "unknown", "lastPreparation" to lastResult)
 }
+
+/** Every identity must be exact, including transmission type; wildcards are not proof. */
+internal fun channelIdentitiesMatch(target: AntTrainerIdentity, configured: Map<String, Any?>?,
+    adapter: Map<String, Any?>?, received: Map<String, Any?>?): Boolean =
+    listOf(configured, adapter, received).all {
+        it != null && it["deviceNumber"] == target.number && it["deviceType"] == target.type && it["transmissionType"] == target.transmission
+    }

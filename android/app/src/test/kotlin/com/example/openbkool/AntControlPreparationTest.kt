@@ -90,4 +90,15 @@ class AntControlPreparationTest {
         try { assertFalse(AntRadioCoordinator.acquire(connection)) } finally { AntRadioCoordinator.release(scan) }
         assertTrue(AntRadioCoordinator.acquire(connection)); AntRadioCoordinator.release(connection)
     }
+    @Test fun configuredAdapterAndReceivedIdsMustAllMatchSelectedIncludingTransmission() {
+        val exact = target.toMap()
+        assertTrue(channelIdentitiesMatch(target, exact, exact, exact))
+        for (wrong in listOf(null, exact + mapOf("deviceNumber" to 0), exact + mapOf("deviceNumber" to 30065),
+            exact + mapOf("deviceType" to 17), exact + mapOf("transmissionType" to 6))) {
+            assertFalse(channelIdentitiesMatch(target, wrong, exact, exact))
+            assertFalse(channelIdentitiesMatch(target, exact, wrong, exact))
+            assertFalse(channelIdentitiesMatch(target, exact, exact, wrong))
+        }
+    }
+
 }

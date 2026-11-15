@@ -57,8 +57,34 @@ class AntTrainerSearchController extends ChangeNotifier {
         );
       }
       await _listen();
+      _manualGeneration++;
       snapshot = {
         ...snapshot,
+        if (mode == 'training' || mode == 'training_connected') ...{
+          'sessionId': null,
+          'manualControl': <String, Object?>{
+            'enabled': false,
+            'eligible': false,
+            'unavailableReason': 'starting',
+          },
+          'manualControlEvents': <Object?>[],
+          'controlPreparation': null,
+          'channelIdentity': null,
+          'startedAt': null,
+          'updatedAt': null,
+          'events': <Object?>[],
+          'messages': <Object?>[],
+          'operationEvents': <Object?>[],
+          'csvError': null,
+          'telemetry': null,
+          'devices': <Object?>[],
+          'connectionState': 'waiting_for_identity',
+          'channelMode': mode == 'training_connected'
+              ? 'dedicated_bidirectional_manual_opt_in'
+              : 'background_receive_only',
+          'selectedDevice': device,
+          'csvFile': null,
+        },
         'status': 'starting',
         'running': true,
         'clientError': null,

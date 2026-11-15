@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'ant_trainer_search.dart';
+import 'manual_control_status.dart';
 
 class TrainingPage extends StatefulWidget {
   const TrainingPage({
@@ -49,6 +50,16 @@ class _TrainingPageState extends State<TrainingPage> {
       final t = r['telemetry'] as Map? ?? const {};
       final manual = r['manualControl'] as Map? ?? const {};
       final enabled = manual['enabled'] == true;
+      final activation = ManualActivationStatus.fromReport(
+        r,
+        commandBusy: c.commandBusy,
+        stopping: c.manualStopping,
+      );
+      final link = manual['link'] as Map? ?? const {};
+      final channelIdentity = r['channelIdentity'] as Map? ?? const {};
+      String identity(Object? value) => value is Map
+          ? '${value['deviceNumber']}/${value['deviceType']}/${value['transmissionType']}'
+          : 'pendiente';
       final sessionId = r['sessionId'] as String?;
       final submitted =
           (manual['lastSubmittedPercent'] as num?)?.toDouble() ?? 0;
@@ -122,7 +133,7 @@ class _TrainingPageState extends State<TrainingPage> {
               FilledButton.icon(
                 onPressed: c.running || c.commandBusy
                     ? null
-                    : () => c.start('training', device: selected),
+                    : () => c.start('training_connected', device: selected),
                 icon: const Icon(Icons.play_arrow),
                 label: const Text('Iniciar entrenamiento'),
               ),
@@ -164,10 +175,10 @@ class _TrainingPageState extends State<TrainingPage> {
               ),
               OutlinedButton.icon(
                 icon: const Icon(Icons.link),
-                label: const Text('3. Conectar y entrenar (sin comandos)'),
+                label: const Text('Solo telemetría (sin control)'),
                 onPressed: c.running || c.commandBusy
                     ? null
-                    : () => c.start('training_connected', device: selected),
+                    : () => c.start('training', device: selected),
               ),
               Text(
                 'Canal: ${r['channelMode'] ?? 'sin abrir'} · identidad: ${r['connectionState'] ?? 'sin verificar'}',
@@ -183,10 +194,7 @@ class _TrainingPageState extends State<TrainingPage> {
               CheckboxListTile(
                 title: const Text('Habilitar prueba de resistencia'),
                 value: enabled,
-                onChanged:
-                    c.running &&
-                        !c.commandBusy &&
-                        (enabled || manual['eligible'] == true)
+                onChanged: activation.canChange
                     ? (value) async {
                         if (value != true) {
                           await c.manualAction(
@@ -224,9 +232,34 @@ class _TrainingPageState extends State<TrainingPage> {
                       }
                     : null,
               ),
+              Text(
+                '${activation.canChange ? 'Estado' : 'Activación bloqueada'} [${activation.code}]: ${activation.message}',
+                key: const ValueKey('manualActivationReason'),
+              ),
+              Text(
+                'Diagnóstico de control v2 · Kotlin: ${r['controlDiagnosticsVersion'] ?? 'pendiente'}',
+              ),
+              ExpansionTile(
+                title: const Text('Condiciones actuales de seguridad'),
+                children: [
+                  SelectableText(
+                    'Sesión: ${sessionId ?? 'sin confirmar'}\n'
+                    'ID seleccionado: ${identity(channelIdentity['selected'])}\n'
+                    'ID configurado: ${identity(channelIdentity['configured'])}\n'
+                    'ID leído del adaptador: ${identity(channelIdentity['adapterReadback'])}\n'
+                    'ID recibido: ${identity(channelIdentity['lastReceived'])} · coincidencia completa: ${channelIdentity['allMatch'] ?? 'pendiente'}\n'
+                    'Error al leer ID del canal: ${channelIdentity['readbackError'] ?? 'ninguno'}\n'
+                    'Canal: ${r['channelMode'] ?? 'sin abrir'} · identidad: ${r['connectionState'] ?? 'sin verificar'}\n'
+                    'Canal específico: ${link['dedicated'] ?? 'sin datos'} · abierto: ${link['channelOpen'] ?? 'sin datos'} · radio disponible: ${link['radioAvailable'] ?? 'sin datos'}\n'
+                    'ID verificado: ${link['identityVerified'] ?? 'sin datos'}\n'
+                    'Fabricante: ${link['manufacturerId'] ?? 'pendiente'} · modelo: ${link['modelNumber'] ?? 'pendiente'}\n'
+                    'Edad de señal: ${link['signalAgeMs'] ?? '-'} ms · telemetría válida: ${link['telemetryFresh'] ?? 'sin datos'}\n'
+                    'Bloqueos Kotlin: ${manual['blockingReasons'] ?? manual['unavailableReason'] ?? 'sin datos'}\n'
+                    'Operación en curso: ${c.commandBusy} · actualización: ${r['updatedAt'] ?? 'pendiente'}',
+                  ),
+                ],
+              ),
               if (enabled) Text('Tiempo restante: $remaining s'),
-              if (!enabled && manual['unavailableReason'] != null)
-                Text('Control no disponible: ${manual['unavailableReason']}'),
               Text(
                 'Última pendiente entregada a la API: ${manual['lastSubmittedPercent'] ?? 'ninguna'} %. Aplicación física SIN confirmar.',
               ),
@@ -275,7 +308,15 @@ class _TrainingPageState extends State<TrainingPage> {
                   try {
                     await Clipboard.setData(
                       ClipboardData(
-                        text: const JsonEncoder.withIndent('  ').convert(r),
+                        text: const JsonEncoder.withIndent('  ').convert({
+                          ...r,
+                          'manualActivationUi': {
+                            'code': activation.code,
+                            'canChange': activation.canChange,
+                            'commandBusy': c.commandBusy,
+                            'manualStopping': c.manualStopping,
+                          },
+                        }),
                       ),
                     );
                     if (context.mounted) {
