@@ -13,6 +13,7 @@ import 'training.dart';
 import 'app_home.dart';
 import 'trainer_session.dart';
 import 'experimental_slopes.dart';
+import 'manual_ride.dart';
 
 void main() => runApp(const OpenBkoolApp());
 
@@ -528,11 +529,32 @@ class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
             leading: const Icon(Icons.science_outlined),
             title: const Text('Pendientes experimentales'),
             subtitle: const Text(
-              'Diagnóstico por nivel · +2 % y +3 % bloqueados',
+              'Pruebas aisladas de pendiente · +4 % bloqueado',
             ),
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(
                 builder: (_) => ExperimentalSlopesPage(controller: _training),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.sync),
+            title: const Text('Reenvío y parada ANT'),
+            subtitle: const Text('+0,5 % · refresco cada 5 s · máximo 30 s'),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => ManualRidePage(
+                  controller: _training,
+                  refreshTrial: true,
+                  device:
+                      widget.initialDevice ??
+                      const {
+                        'protocol': 'BKOOL_V1_PUBLIC',
+                        'deviceNumber': 30064,
+                        'deviceType': 112,
+                        'transmissionType': 5,
+                      },
+                ),
               ),
             ),
           ),

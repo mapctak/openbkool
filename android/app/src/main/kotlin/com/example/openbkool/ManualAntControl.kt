@@ -1,5 +1,7 @@
 package com.example.openbkool
 
+import java.util.concurrent.atomic.AtomicReference
+
 /** Operational policy is deliberately separate from offline protocol candidates.
  * Raising either bound requires reviewed physical transmission and stop evidence. */
 internal object ManualControlPolicy {
@@ -8,6 +10,7 @@ internal object ManualControlPolicy {
     const val FULL_MIN_PERCENT = -5.0
     const val FULL_MAX_PERCENT = 15.0
     const val REFRESH_MS = 5000L
+    const val REFRESH_TRIAL_PHYSICAL_ENABLED = true
     const val MAX_PERCENT = 1.0
     const val STEP_PERCENT = 0.5
     const val MAX_DURATION_MS = 30000L
@@ -17,8 +20,10 @@ internal enum class ManualControlMode(val wireName: String, val maxDurationMs: L
     TRIAL("trial_30s", ManualControlPolicy.MAX_DURATION_MS),
     ISOLATED_TWO("isolated_two_percent", ManualControlPolicy.MAX_DURATION_MS),
     ISOLATED_THREE("isolated_three_percent", ManualControlPolicy.MAX_DURATION_MS),
+    REFRESH_TRIAL("refresh_trial_30s", ManualControlPolicy.MAX_DURATION_MS),
     MANUAL_SESSION("manual_session", null),
     CONTINUOUS("continuous_experimental", null);
+    val refreshes: Boolean get() = this == MANUAL_SESSION || this == REFRESH_TRIAL
     val isolatedTarget: Double? get() = when(this) { ISOLATED_TWO -> 2.0; ISOLATED_THREE -> 3.0; else -> null }
     companion object { fun parse(value: String?) = entries.firstOrNull { it.wireName == value } }
 }
@@ -71,6 +76,9 @@ internal data class ManualControlLink(val dedicated: Boolean, val identityVerifi
 
 }
 
+/** Cancellation before ANT IPC entry is not a radio error and must not suppress stop-zero. */
+internal class ManualCommandCancelledException : IllegalStateException("Command cancelled before ANT API entry")
+
 /** Serial-worker state machine; injected transport is fake in every automated test. */
 internal class ManualAntControl(
     private val target: AntTrainerIdentity,
@@ -83,6 +91,21 @@ internal class ManualAntControl(
     private val describeError: (Exception) -> Map<String, Any?> = { mapOf("type" to it.javaClass.name, "message" to it.message) },
 ) {
     companion object { const val MAX_TEST_MS = ManualControlPolicy.MAX_DURATION_MS; const val DRAIN_MS = 1500L }
+    private data class StopIntent(val reason: String, val requestedAtMs: Long)
+    private val stopIntent = AtomicReference<StopIntent?>(null)
+    private var refreshGoal: Double? = null
+    private var targetRevision = 0L
+    private var commandSequence = 0L
+    private var currentApiFields: Map<String, Any?>? = null
+    private var apiEnteredAtMs: Long? = null
+    /** Safe from UI/SDK threads. Never waits for the serial worker or ANT IPC. */
+    fun invalidateTargets(reason: String) { stopIntent.compareAndSet(null, StopIntent(reason, clock())) }
+    val targetsInvalidated: Boolean get() = stopIntent.get() != null
+    /** Called on the serial worker immediately before the actual SDK call, never on TX. */
+    fun recordApiEntry() {
+        apiEnteredAtMs = clock()
+        event("ant_api_entered", checkNotNull(currentApiFields) + mapOf("apiEnteredAtMs" to apiEnteredAtMs), result = false)
+    }
     private var controlState = "inactive"
     private var stopReason: String? = null
     private var closeComplete = false
@@ -119,7 +142,7 @@ internal class ManualAntControl(
     fun supervise() {
         val failure = abortReason()
         val next = when {
-            stopped && !closeComplete -> "stopping"
+            (stopped || stopIntent.get() != null) && !closeComplete -> "stopping"
             faulted || closeFailed || (stopped && everEnabled && stopResult != null && stopResult != "zero_api_returned_unconfirmed") || (stopped && (stopReason?.startsWith("link_lost") == true || stopReason == "disconnected")) -> "error"
             stopped -> "stopped"
             enabled && failure != null -> "error"
@@ -146,9 +169,11 @@ internal class ManualAntControl(
             selectedMode == null -> "invalid_control_mode"
             selectedMode == ManualControlMode.ISOLATED_TWO && !experimentalConfirmed -> "isolated_two_confirmation_required"
             selectedMode == ManualControlMode.ISOLATED_THREE && !experimentalConfirmed -> "isolated_three_confirmation_required"
+            selectedMode == ManualControlMode.REFRESH_TRIAL && !experimentalConfirmed -> "refresh_trial_confirmation_required"
+            selectedMode == ManualControlMode.REFRESH_TRIAL && !ManualControlPolicy.REFRESH_TRIAL_PHYSICAL_ENABLED -> "refresh_trial_disabled"
             selectedMode == ManualControlMode.MANUAL_SESSION && !manualSessionAllowed -> "manual_session_stop_and_radio_buffer_validation_required"
             selectedMode == ManualControlMode.CONTINUOUS && !continuousAllowed -> "continuous_physical_validation_required"
-            stopped || faulted -> "session_requires_reconnect"
+            stopped || faulted || stopIntent.get() != null -> "session_requires_reconnect"
             enabled -> "already_enabled"
             else -> link().reason(target)
         }
@@ -171,6 +196,8 @@ internal class ManualAntControl(
         val value = percent.takeIf { it.isFinite() }
         lastRequested = value
         event("request", mapOf("attempt" to attempts, "requestedPercent" to value))
+        if (mode == ManualControlMode.REFRESH_TRIAL && percent != 0.0 && percent != 0.5)
+            return event("rejected", mapOf("reason" to "refresh_trial_only_zero_or_half", "apiCalled" to false))
         if (mode != ManualControlMode.MANUAL_SESSION && percent in listOf(2.0,3.0,4.0) && percent != mode.isolatedTarget) return event("rejected", mapOf(
             "reason" to "experimental_level_not_authorized", "requestedPercent" to percent,
             "attempt" to attempts, "apiCalled" to false))
@@ -178,7 +205,7 @@ internal class ManualAntControl(
             return event("rejected", mapOf("reason" to "invalid_slope", "attempt" to attempts))
         }
         val reason = when {
-            stopped || faulted -> "session_requires_reconnect"
+            stopped || faulted || stopIntent.get() != null -> "session_requires_reconnect"
             !enabled -> "explicit_activation_required"
             else -> abortReason()
         }
@@ -194,37 +221,49 @@ internal class ManualAntControl(
     /** Called only on the serial worker. No timer, captured payload or queue of targets.
      * A late heartbeat sends at most once using the current API-accepted goal. */
     fun refreshTarget(): Map<String, Any?>? {
-        if (mode != ManualControlMode.MANUAL_SESSION || !enabled || stopped || faulted || abortReason() != null) return null
-        val current = lastSubmitted ?: return null
+        if (!mode.refreshes || !enabled || stopped || faulted || stopIntent.get() != null || abortReason() != null) return null
+        val current = refreshGoal ?: return null
         val previous = lastAttemptAt ?: return null
         if (clock() - previous < ManualControlPolicy.REFRESH_MS) return null
         event("periodic_refresh", mapOf("requestedPercent" to current, "intervalMs" to ManualControlPolicy.REFRESH_MS), result = false)
         return send(current, encodePro1Slope(current), false, periodic = true)
     }
     private fun send(percent: Double, bytes: ByteArray, stopping: Boolean, periodic: Boolean = false): Map<String, Any?> {
+        if (!stopping && stopIntent.get() != null) return event("command_cancelled", mapOf("apiCalled" to false, "reason" to "targets_invalidated"))
         lastAttemptAt = clock()
-        val fields = mapOf("requestedPercent" to percent, "payloadHex" to hex(bytes), "stopRequest" to stopping,
+        val revision = if (stopping || periodic) targetRevision else targetRevision + 1
+        val fields = mapOf("commandId" to ++commandSequence, "targetRevision" to revision,
+            "requestedPercent" to percent, "payloadHex" to hex(bytes), "stopRequest" to stopping,
             "api" to "AntChannel.setBroadcastData", "apiReturned" to false, "periodicRefresh" to periodic)
+        currentApiFields = fields; apiEnteredAtMs = null
         event("api_attempt", fields)
         return try {
+            if (!stopping && stopIntent.get() != null) throw ManualCommandCancelledException()
             transport(bytes.copyOf(), stopping)
             lastSubmitted = percent
-            event("api_returned", fields + mapOf("apiReturned" to true, "apiResult" to "void_return_no_delivery_confirmation")).also { lastApiSuccess = it; if (stopping) lastStopCommand = it else lastManualApiSuccess = it }
+            if (!stopping) { refreshGoal = percent; targetRevision = revision }
+            event("api_returned", fields + mapOf("apiReturned" to true, "apiReturnedAtMs" to clock(),
+                "apiEnteredAtMs" to apiEnteredAtMs, "apiResult" to "void_return_no_delivery_confirmation")).also { lastApiSuccess = it; if (stopping) lastStopCommand = it else lastManualApiSuccess = it }
+        } catch (_: ManualCommandCancelledException) {
+            event("command_cancelled", fields + mapOf("apiCalled" to false, "reason" to "targets_invalidated"))
         } catch (error: Exception) {
-            faulted = true; enabled = false
+            faulted = true; enabled = false; refreshGoal = null
             supervise()
             val details = try { describeError(error) } catch (_: Exception) { mapOf("type" to error.javaClass.name, "message" to error.message) }
-            event("api_error", fields + mapOf("error" to details)).also { lastApiError = it; if (stopping) lastStopCommand = it }
-        }
+            event("api_error", fields + mapOf("apiEnteredAtMs" to apiEnteredAtMs, "apiErrorAtMs" to clock(), "error" to details)).also { lastApiError = it; if (stopping) lastStopCommand = it }
+        } finally { currentApiFields = null }
     }
     /** Exactly one zero attempt, only after activation and with a still usable link.
      * Force this one duplicate zero for stop; a previous void return proves no delivery.
      * Returns whether radio drain time is needed before closing. Never retries. */
     fun stop(reason: String, allowZero: Boolean): Boolean {
         if (stopped) return false
+        invalidateTargets(reason)
+        refreshGoal = null
         stopped = true; enabled = false; stopReason = reason; endedAt = clock()
         supervise()
-        event("stop_requested", mapOf("reason" to reason, "zeroIsNotSafeResistance" to true))
+        event("stop_requested", mapOf("reason" to reason, "zeroIsNotSafeResistance" to true,
+            "stopRequestedAtMs" to stopIntent.get()?.requestedAtMs, "stopProcessedAtMs" to clock(), "targetsInvalidated" to true))
         val skip = when {
             !everEnabled -> "never_enabled"
             faulted -> "api_fault_no_retry"
@@ -246,6 +285,7 @@ internal class ManualAntControl(
         val reasons = buildList {
             if (faulted) add("api_fault_requires_reconnect")
             if (stopped) add("session_stopped")
+            if (!stopped && stopIntent.get() != null) add("stop_requested")
             if (enabled && deadline?.let { now >= it } == true) add("test_timeout")
             if (terminalAbort != null && terminalAbort != "test_timeout") add(terminalAbort!!)
             addAll(current.blockingReasons(target))
@@ -256,12 +296,15 @@ internal class ManualAntControl(
             "unavailableReason" to reasons.firstOrNull(), "blockingReasons" to reasons,
             "link" to current.toMap(), "remainingMs" to deadline?.let { (it - now).coerceAtLeast(0) },
             "mode" to mode.wireName, "elapsedControlMs" to activatedAt?.let { (endedAt ?: now) - it },
-            "maxDurationMs" to mode.maxDurationMs, "operationalMaxPercent" to (if (mode == ManualControlMode.MANUAL_SESSION) ManualControlPolicy.FULL_MAX_PERCENT else mode.isolatedTarget ?: ManualControlPolicy.MAX_PERCENT),
+            "maxDurationMs" to mode.maxDurationMs, "operationalMaxPercent" to (if (mode == ManualControlMode.MANUAL_SESSION) ManualControlPolicy.FULL_MAX_PERCENT else if (mode == ManualControlMode.REFRESH_TRIAL) 0.5 else mode.isolatedTarget ?: ManualControlPolicy.MAX_PERCENT),
             "isolatedTargetPercent" to mode.isolatedTarget,
             "isolatedTargetAttempted" to (twoPercentAttempted || threePercentAttempted),
             "threePercentAttempted" to threePercentAttempted, "twoPercentAttempted" to twoPercentAttempted, "stepPercent" to ManualControlPolicy.STEP_PERCENT,
             "manualSessionPhysicalEnabled" to manualSessionAllowed,
-            "periodicRefreshEnabled" to (enabled && mode == ManualControlMode.MANUAL_SESSION && !faulted && terminalAbort == null),
+            "periodicRefreshEnabled" to (enabled && mode.refreshes && !faulted && terminalAbort == null && stopIntent.get() == null),
+            "refreshTargetPercent" to if (enabled && !faulted && stopIntent.get() == null) refreshGoal else null,
+            "targetRevision" to targetRevision, "targetsInvalidated" to (stopIntent.get() != null),
+            "stopRequestedAtMs" to stopIntent.get()?.requestedAtMs, "stopIntentReason" to stopIntent.get()?.reason,
             "continuousControlEnabled" to continuousAllowed,
             "continuousBlockReason" to if (continuousAllowed) null else "physical_stop_and_radio_buffer_validation_required", "lastRequestedPercent" to lastRequested,
             "lastManualApiSuccess" to lastManualApiSuccess, "lastStopCommand" to lastStopCommand,

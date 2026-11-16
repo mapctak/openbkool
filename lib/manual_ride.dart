@@ -22,9 +22,11 @@ class ManualRidePage extends StatefulWidget {
     super.key,
     required this.controller,
     required this.device,
+    this.refreshTrial = false,
   });
   final AntTrainerSearchController controller;
   final Map<String, Object?> device;
+  final bool refreshTrial;
 
   @override
   State<ManualRidePage> createState() => _ManualRidePageState();
@@ -35,6 +37,12 @@ class _ManualRidePageState extends State<ManualRidePage>
   double selected = 0;
   String? sessionId;
   bool backgroundStopRequested = false;
+  String get mode =>
+      widget.refreshTrial ? 'refresh_trial_30s' : 'manual_session';
+  String get policyKey =>
+      widget.refreshTrial ? 'refreshTrialPolicy' : 'manualSessionPolicy';
+  List<double> get slopes =>
+      widget.refreshTrial ? const [0, 0.5] : manualRideSlopes;
 
   @override
   void initState() {
@@ -68,18 +76,19 @@ class _ManualRidePageState extends State<ManualRidePage>
     final c = widget.controller;
     final m = c.snapshot['manualControl'] as Map? ?? const {};
     return c.running &&
-        (c.snapshot['manualSessionPolicy'] as Map?)?['physicalEnabled'] ==
-            true &&
-        m['mode'] == 'manual_session' &&
+        (c.snapshot[policyKey] as Map?)?['physicalEnabled'] == true &&
+        m['mode'] == mode &&
         m['enabled'] == true &&
         m['eligible'] == true &&
         !c.commandBusy &&
         !c.manualStopping &&
-        !c.controlTransportUncertain;
+        !c.controlTransportUncertain &&
+        (!widget.refreshTrial ||
+            (m['remainingMs'] is num && (m['remainingMs'] as num) > 0));
   }
 
   Future<void> request(double value) async {
-    if (!usable || !manualRideSlopes.contains(value)) return;
+    if (!usable || !slopes.contains(value)) return;
     setState(() => selected = value);
     await widget.controller.manualAction(
       'setManualSlope',
@@ -90,16 +99,22 @@ class _ManualRidePageState extends State<ManualRidePage>
 
   Future<void> authorizeSession() async {
     final c = widget.controller;
-    final policy = c.snapshot['manualSessionPolicy'] as Map? ?? const {};
+    final policy = c.snapshot[policyKey] as Map? ?? const {};
     if (policy['physicalEnabled'] != true) return;
     final sid = sessionId;
     final consent = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         scrollable: true,
-        title: const Text('Iniciar control manual'),
-        content: const Text(
-          'Autorizo esta sesión manual de −5 % a +15 %, sin caducidad fija. Las órdenes se refrescan aproximadamente cada 5 segundos. La API no confirma resistencia física. LLANO solicita pendiente cero; Detener finaliza el control sin garantizar resistencia cero.',
+        title: Text(
+          widget.refreshTrial
+              ? 'Autorizar ensayo de reenvío'
+              : 'Iniciar control manual',
+        ),
+        content: Text(
+          widget.refreshTrial
+              ? 'Autorizo este ensayo de 30 segundos, solo 0 % y +0,5 %, con reenvíos del objetivo vigente cada 5 segundos. Activar no transmite. Usaré Detener control para comprobar la parada; si no disminuye la resistencia, dejaré de pedalear según la recuperación ya comprobada. API y TX no confirman aplicación física. No habilita el modo ilimitado.'
+              : 'Autorizo esta sesión manual de −5 % a +15 %, sin caducidad fija. Las órdenes se refrescan aproximadamente cada 5 segundos. La API no confirma resistencia física. LLANO solicita pendiente cero; Detener finaliza el control sin garantizar resistencia cero.',
         ),
         actions: [
           TextButton(
@@ -108,7 +123,9 @@ class _ManualRidePageState extends State<ManualRidePage>
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Autorizar sesión'),
+            child: Text(
+              widget.refreshTrial ? 'Autorizar ensayo' : 'Autorizar sesión',
+            ),
           ),
         ],
       ),
@@ -117,7 +134,8 @@ class _ManualRidePageState extends State<ManualRidePage>
       await c.manualAction(
         'enableManualTest',
         confirmed: true,
-        controlMode: 'manual_session',
+        controlMode: mode,
+        experimentalConfirmed: widget.refreshTrial,
         expectedSessionId: sid,
       );
     }
@@ -130,7 +148,7 @@ class _ManualRidePageState extends State<ManualRidePage>
       final c = widget.controller, r = c.snapshot;
       final m = r['manualControl'] as Map? ?? const {};
       final t = r['telemetry'] as Map? ?? const {};
-      final policy = r['manualSessionPolicy'] as Map? ?? const {};
+      final policy = r[policyKey] as Map? ?? const {};
       final nativeAllowed = policy['physicalEnabled'] == true;
       final slope = SlopePresentation.fromReport(r);
       final activation = ManualActivationStatus.fromReport(
@@ -150,7 +168,7 @@ class _ManualRidePageState extends State<ManualRidePage>
         return '${value is num ? value.toStringAsFixed(decimals) : '—'} $unit';
       }
 
-      final active = m['enabled'] == true && m['mode'] == 'manual_session';
+      final active = m['enabled'] == true && m['mode'] == mode;
       return PopScope(
         canPop: !c.running && !c.commandBusy,
         onPopInvokedWithResult: (didPop, _) async {
@@ -161,7 +179,11 @@ class _ManualRidePageState extends State<ManualRidePage>
           }
         },
         child: Scaffold(
-          appBar: AppBar(title: const Text('Control manual')),
+          appBar: AppBar(
+            title: Text(
+              widget.refreshTrial ? 'Reenvío y parada ANT' : 'Control manual',
+            ),
+          ),
           bottomNavigationBar: SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -172,7 +194,7 @@ class _ManualRidePageState extends State<ManualRidePage>
                     children: [
                       Expanded(
                         child: FilledButton(
-                          onPressed: usable && selected > -5
+                          onPressed: usable && selected > slopes.first
                               ? () => request(selected - 0.5)
                               : null,
                           child: const Text(
@@ -195,7 +217,7 @@ class _ManualRidePageState extends State<ManualRidePage>
                       const SizedBox(width: 8),
                       Expanded(
                         child: FilledButton(
-                          onPressed: usable && selected < 15
+                          onPressed: usable && selected < slopes.last
                               ? () => request(selected + 0.5)
                               : null,
                           child: const Text(
@@ -263,8 +285,10 @@ class _ManualRidePageState extends State<ManualRidePage>
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               Text('Parada: ${slope.stopStatus ?? 'sin solicitud'}'),
-              const Text(
-                'Aplicación física no confirmada. Una pendiente negativa no implica impulso ni aceleración de la rueda.',
+              Text(
+                widget.refreshTrial
+                    ? 'API y eventos TX no confirman entrega ni aplicación física de un payload concreto.'
+                    : 'Aplicación física no confirmada. Una pendiente negativa no implica impulso ni aceleración de la rueda.',
               ),
               Card(
                 child: Padding(
@@ -290,7 +314,7 @@ class _ManualRidePageState extends State<ManualRidePage>
                 isExpanded: true,
                 value: selected,
                 items: [
-                  for (final value in manualRideSlopes)
+                  for (final value in slopes)
                     DropdownMenuItem(
                       value: value,
                       child: Text(ridePercent(value)),
@@ -307,9 +331,23 @@ class _ManualRidePageState extends State<ManualRidePage>
                         }
                       },
               ),
-              const Text(
-                'Rango de codificación original −5 % a +15 %. Respuesta física comunicada: 0 %, +0,5 %, +1 %, +2 % y +3 %. El selector en reposo solo previsualiza; no transmite.',
+              Text(
+                widget.refreshTrial
+                    ? 'Ensayo acotado: máximo 30 s, solo 0 % y +0,5 %. Refresco aproximado de 5 s; no es un watchdog. Activar no transmite.'
+                    : 'Rango de codificación original −5 % a +15 %. Respuesta física comunicada: 0 %, +0,5 %, +1 %, +2 % y +3 %. El selector en reposo solo previsualiza; no transmite.',
               ),
+              if (widget.refreshTrial) ...[
+                Text(
+                  'Tiempo restante: ${m['remainingMs'] is num ? '${((m['remainingMs'] as num) / 1000).ceil()} s' : 'sin iniciar'}',
+                ),
+                FilledButton(
+                  onPressed: usable ? () => request(0.5) : null,
+                  child: const Text('Solicitar +0,5 %'),
+                ),
+                const Text(
+                  'Detener invalida el objetivo y cancela refrescos. Las llamadas ya iniciadas y el búfer de radio no pueden retirarse de forma verificada.',
+                ),
+              ],
               if (!c.running)
                 FilledButton.icon(
                   onPressed: c.commandBusy
@@ -328,9 +366,18 @@ class _ManualRidePageState extends State<ManualRidePage>
                         m['enabled'] != true
                     ? authorizeSession
                     : null,
-                child: const Text('Autorizar sesión manual'),
+                child: Text(
+                  widget.refreshTrial
+                      ? 'Preparar ensayo de 30 s'
+                      : 'Autorizar sesión manual',
+                ),
               ),
-              if (nativeAllowed) Text(activation.message),
+              if (nativeAllowed)
+                Text(
+                  active
+                      ? 'Control activo. Usa DETENER CONTROL para finalizar.'
+                      : activation.message,
+                ),
               OutlinedButton(
                 onPressed: () => Navigator.push<void>(
                   context,

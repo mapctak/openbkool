@@ -2,6 +2,10 @@
 
 Rama `feature/control-ant`, revisión 2026-11-16.
 
+Actualización 1.3.1+16: [ensayo acotado de reenvío y parada](ensayo_reenvio_parada_1_3_1.md),
+solo 0/+0,5 y 30 s, para reunir evidencia física/radio. `manual_session` sigue
+bloqueado; el ensayo no lo habilita automáticamente.
+
 **Modo prolongado preparado, pero bloqueado para uso físico.** La aplicación
 ofrece una nueva pantalla y los 41 valores −5..+15 %, paso 0,5, con cero exacto.
 Seleccionarlos en reposo solo previsualiza. La barrera nativa impide activar el
@@ -75,11 +79,11 @@ Timer de 1000 ms (`:747–748`, `Constants.java:20`), y vuelve a solicitar pendi
 o ERG. Los cambios reinician contador y reemplazan Handler de 500 ms
 (`:1031–1071`). Esto demuestra refresco normal, **no un watchdog de firmware**.
 
-El nuevo `ManualAntControl.refreshTarget`, llamado en el trabajador serial por
-el heartbeat existente, prepara un equivalente de unos 5 s solo para
-`manual_session`. Como su habilitación física está bloqueada, **no introduce
-reenvíos en las sesiones físicas actuales**. El antiguo continuo y los ensayos
-aislados mantienen su comportamiento.
+`ManualAntControl.refreshTarget`, llamado en el trabajador serial por el
+heartbeat existente, prepara un equivalente de unos 5 s para `manual_session`.
+En 1.3.0 estaba bloqueado físicamente. Desde 1.3.1 se reutiliza también en el
+ensayo explícito y acotado `refresh_trial_30s`, sin habilitar `manual_session`.
+El antiguo continuo y las pruebas individuales de pendiente conservan su comportamiento.
 
 - No crea un temporizador por objetivo, cola de payloads ni tarea con pendiente
   capturada. Consulta la última pendiente cuyo envío aceptó la API.
