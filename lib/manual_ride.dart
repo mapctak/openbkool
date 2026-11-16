@@ -24,10 +24,12 @@ class ManualRidePage extends StatefulWidget {
     required this.device,
     this.refreshTrial = false,
     this.lowLoad = false,
+    this.initialProfile,
   });
   final AntTrainerSearchController controller;
   final Map<String, Object?> device;
   final bool refreshTrial, lowLoad;
+  final String? initialProfile;
 
   @override
   State<ManualRidePage> createState() => _ManualRidePageState();
@@ -38,7 +40,18 @@ class _ManualRidePageState extends State<ManualRidePage>
   double selected = 0;
   String? sessionId;
   bool backgroundStopRequested = false;
-  late bool lowLoad;
+  late String rangeProfile;
+  bool get lowLoad => rangeProfile == 'low';
+  bool authorizedValue(double value) => widget.refreshTrial || lowLoad
+      ? value == 0 || value == 0.5
+      : rangeProfile == 'reported'
+      ? value >= 0 && value <= 3
+      : value >= -5 && value <= 15;
+  String get profileLabel => switch (rangeProfile) {
+    'low' => 'Carga baja · 0/+0,5 %',
+    'reported' => 'Positivo · 0/+3 %',
+    _ => 'Original experimental · −5/+15 %',
+  };
   String get mode => widget.refreshTrial
       ? 'refresh_trial_30s'
       : lowLoad
@@ -50,12 +63,13 @@ class _ManualRidePageState extends State<ManualRidePage>
       ? 'lowLoadPolicy'
       : 'manualSessionPolicy';
   List<double> get slopes =>
-      widget.refreshTrial || lowLoad ? const [0, 0.5] : manualRideSlopes;
+      widget.refreshTrial ? const [0, 0.5] : manualRideSlopes;
 
   @override
   void initState() {
     super.initState();
-    lowLoad = widget.lowLoad && !widget.refreshTrial;
+    rangeProfile =
+        widget.initialProfile ?? (widget.lowLoad ? 'low' : 'original');
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -87,6 +101,9 @@ class _ManualRidePageState extends State<ManualRidePage>
     return c.running &&
         (c.snapshot[policyKey] as Map?)?['physicalEnabled'] == true &&
         m['mode'] == mode &&
+        (lowLoad ||
+            widget.refreshTrial ||
+            (m['authorizedRange'] as Map?)?['id'] == rangeProfile) &&
         m['enabled'] == true &&
         m['eligible'] == true &&
         !c.commandBusy &&
@@ -97,7 +114,7 @@ class _ManualRidePageState extends State<ManualRidePage>
   }
 
   Future<void> request(double value) async {
-    if (!usable || !slopes.contains(value)) return;
+    if (!usable || !slopes.contains(value) || !authorizedValue(value)) return;
     setState(() => selected = value);
     await widget.controller.manualAction(
       'setManualSlope',
@@ -120,14 +137,14 @@ class _ManualRidePageState extends State<ManualRidePage>
               ? 'Autorizar ensayo de reenvío'
               : lowLoad
               ? 'Autorizar sesión supervisada'
-              : 'Iniciar control manual',
+              : 'Autorizar rango experimental',
         ),
         content: Text(
           widget.refreshTrial
               ? 'Autorizo este ensayo de 30 segundos, solo 0 % y +0,5 %, con reenvíos del objetivo vigente cada 5 segundos. Activar no transmite. Usaré Detener control para comprobar la parada; si no disminuye la resistencia, dejaré de pedalear según la recuperación ya comprobada. API y TX no confirman aplicación física. No habilita el modo ilimitado.'
               : lowLoad
               ? 'Autorizo una sesión supervisada sin caducidad de 30 s, solo 0 % y +0,5 %, con reenvío cada 5 s. El orden de radio y la resistencia física no están confirmados. Mantendré accesible DETENER CONTROL y la salida independiente del esfuerzo ya comprobada. Detener, perder enlace o pasar a segundo plano finaliza el control; no se reactiva automáticamente. La página 0x11 no certifica resistencia aplicada.'
-              : 'Autorizo esta sesión manual de −5 % a +15 %, sin caducidad fija. Las órdenes se refrescan aproximadamente cada 5 segundos. La API no confirma resistencia física. LLANO solicita pendiente cero; Detener finaliza el control sin garantizar resistencia cero.',
+              : 'Autorizo el perfil $profileLabel para esta sesión sin caducidad fija, con refresco aproximado de 5 s. Solo hay respuesta física comunicada en 0 %, +0,5 %, +1 %, +2 % y +3 %; no todos los niveles intermedios, negativos o superiores están probados. El rango original procede del controlador Pro1, no de una certificación del firmware. Acepto la incertidumbre del orden de radio y de la respuesta física. Mantendré acceso a DETENER CONTROL y podré dejar de pedalear y esperar estable a que pare la rueda según la recuperación comprobada. No cambiaré de perfil durante el control. LLANO y Detener no garantizan resistencia neutralizada. No hay reactivación automática.',
         ),
         actions: [
           TextButton(
@@ -152,7 +169,8 @@ class _ManualRidePageState extends State<ManualRidePage>
         'enableManualTest',
         confirmed: true,
         controlMode: mode,
-        experimentalConfirmed: widget.refreshTrial || lowLoad,
+        experimentalConfirmed: true,
+        rangeProfile: rangeProfile,
         expectedSessionId: sid,
       );
     }
@@ -211,7 +229,10 @@ class _ManualRidePageState extends State<ManualRidePage>
                     children: [
                       Expanded(
                         child: FilledButton(
-                          onPressed: usable && selected > slopes.first
+                          onPressed:
+                              usable &&
+                                  authorizedValue(selected) &&
+                                  authorizedValue(selected - 0.5)
                               ? () => request(selected - 0.5)
                               : null,
                           child: const Text(
@@ -234,7 +255,10 @@ class _ManualRidePageState extends State<ManualRidePage>
                       const SizedBox(width: 8),
                       Expanded(
                         child: FilledButton(
-                          onPressed: usable && selected < slopes.last
+                          onPressed:
+                              usable &&
+                                  authorizedValue(selected) &&
+                                  authorizedValue(selected + 0.5)
                               ? () => request(selected + 0.5)
                               : null,
                           child: const Text(
@@ -270,28 +294,45 @@ class _ManualRidePageState extends State<ManualRidePage>
           body: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              if (!widget.refreshTrial)
-                SwitchListTile(
-                  key: const ValueKey('lowLoadProfile'),
-                  title: const Text('Sesión supervisada 0/+0,5 %'),
-                  subtitle: const Text(
-                    'Sin límite fijo de duración. Desactivar solo previsualiza el rango original bloqueado.',
-                  ),
-                  value: lowLoad,
+              if (!widget.refreshTrial) ...[
+                const Text('Perfil autorizado por sesión'),
+                DropdownButton<String>(
+                  key: const ValueKey('manualRangeProfile'),
+                  isExpanded: true,
+                  value: rangeProfile,
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'low',
+                      child: Text('Carga baja · 0/+0,5 %'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'reported',
+                      child: Text('Positivo · 0/+3 %'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'original',
+                      child: Text('Original experimental · −5/+15 %'),
+                    ),
+                  ],
                   onChanged:
                       m['enabled'] == true || c.commandBusy || c.manualStopping
                       ? null
                       : (value) {
-                          setState(() {
-                            lowLoad = value;
-                            selected = 0;
-                          });
+                          if (value != null) {
+                            setState(() {
+                              rangeProfile = value;
+                              selected = 0;
+                            });
+                          }
                         },
                 ),
-              if (lowLoad)
-                const Text(
-                  'Sesión prolongada supervisada · máximo +0,5 %. Orden de radio y aplicación física no confirmados. El rango completo permanece bloqueado.',
+                Text(
+                  'Selección: 41 valores. Transmisión tras consentimiento: $profileLabel. Perfil fijo mientras el control esté activo.',
                 ),
+                const Text(
+                  'Experimental: rango codificado compatible; respuesta física no comprobada en todos los valores. API, TX y 0x11 no certifican aplicación mecánica.',
+                ),
+              ],
               if (!nativeAllowed)
                 Card(
                   child: Padding(
@@ -299,7 +340,7 @@ class _ManualRidePageState extends State<ManualRidePage>
                     child: Text(
                       lowLoad
                           ? 'Conecta el rodillo y espera las validaciones actuales del enlace antes de autorizar la sesión supervisada.'
-                          : 'Preparado, bloqueado para uso físico. Falta validar la parada con reenvíos y el comportamiento del búfer ANT: no está garantizado que un incremento anterior no llegue después de solicitar cero.',
+                          : 'Conecta el rodillo y espera la política nativa y las validaciones de esta conexión. Sin autorización nativa no se transmite.',
                     ),
                   ),
                 ),
@@ -314,6 +355,19 @@ class _ManualRidePageState extends State<ManualRidePage>
                 }}',
               ),
               Text('Pendiente seleccionada: ${ridePercent(selected)}'),
+              Text('Pendiente solicitada: ${ridePercent(slope.requested)}'),
+              Text(
+                const [0.0, 0.5, 1.0, 2.0, 3.0].contains(selected)
+                    ? 'Respuesta física comunicada para este valor; sin confirmación mecánica por ANT.'
+                    : 'Valor sin validación física comunicada.',
+              ),
+              Text(
+                authorizedValue(selected)
+                    ? active
+                          ? 'Valor dentro del perfil autorizado.'
+                          : 'Previsualización: autorizar no envía este valor.'
+                    : 'Solo previsualización: valor fuera del perfil autorizado; no se transmitirá.',
+              ),
               Text(
                 'Pendiente ordenada: ${ridePercent(slope.apiPercent)}',
                 style: Theme.of(context).textTheme.headlineMedium,
@@ -358,14 +412,16 @@ class _ManualRidePageState extends State<ManualRidePage>
                   for (final value in slopes)
                     DropdownMenuItem(
                       value: value,
-                      child: Text(ridePercent(value)),
+                      child: Text(
+                        '${ridePercent(value)}${authorizedValue(value) ? '' : ' · previsualización'}',
+                      ),
                     ),
                 ],
                 onChanged: c.commandBusy || c.manualStopping
                     ? null
                     : (value) {
                         if (value == null) return;
-                        if (active) {
+                        if (active && authorizedValue(value)) {
                           unawaited(request(value));
                         } else {
                           setState(() => selected = value);
@@ -377,7 +433,7 @@ class _ManualRidePageState extends State<ManualRidePage>
                     ? 'Ensayo acotado: máximo 30 s, solo 0 % y +0,5 %. Refresco aproximado de 5 s; no es un watchdog. Activar no transmite.'
                     : lowLoad
                     ? 'Solo 0 % y +0,5 %. Refresco cada 5 s; termina con DETENER CONTROL, pérdida de enlace o segundo plano. No hay reactivación automática ni caducidad de 30 s.'
-                    : 'Rango de codificación original −5 % a +15 %. Respuesta física comunicada: 0 %, +0,5 %, +1 %, +2 % y +3 %. El selector en reposo solo previsualiza; no transmite.',
+                    : 'Las 41 pendientes se pueden previsualizar. Durante control activo, seleccionar un valor autorizado solicita su envío. Sin control activo, el selector no transmite. Los botones − y + cambian 0,5 %. No se recuperan selecciones previas al autorizar.',
               ),
               if (widget.refreshTrial) ...[
                 Text(

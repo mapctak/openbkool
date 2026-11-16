@@ -14,7 +14,7 @@ class ManualSessionTest {
             if(fail) throw IllegalStateException("simulated IPC error")
             frames.add(hex(b))
         },events::add,manualSessionAllowed=allowed)
-        fun arm()=c.enable(true,"manual_session")
+        fun arm(profile: String="original")=c.enable(true,"manual_session",true,profile)
         fun tick(t: Long) { time=t;c.supervise();c.refreshTarget() }
     }
     @Test fun fullOriginalDomainHasExactly41HalfPointEncodingsAndRejectsInvalidValues() {
@@ -36,7 +36,7 @@ class ManualSessionTest {
         }
     }
     @Test fun productionGateAndExplicitConsentAreIndependentOfLegacyExperiments() {
-        assertFalse(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
+        assertTrue(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
         val s=Sim(false)
         assertEquals("manual_session_stop_and_radio_buffer_validation_required",s.arm()["reason"])
         for(p in listOf(-5.0,4.0,15.0)){s.c.request(p)}
@@ -45,6 +45,38 @@ class ManualSessionTest {
         fake.arm();assertTrue(fake.frames.isEmpty());fake.tick(10000);assertTrue(fake.frames.isEmpty())
         assertNull(fake.c.snapshot()["maxDurationMs"])
         assertEquals("activation_rejected",Sim(false).c.enable(true,"continuous_experimental")["event"])
+    }
+    @Test fun profilesRequireSeparateConsentAndCannotBeEscalatedInActiveSession() {
+        val s=Sim()
+        assertEquals("manual_range_risk_consent_required",s.c.enable(true,"manual_session")["reason"])
+        assertEquals("manual_range_profile_required",s.c.enable(true,"manual_session",true)["reason"])
+        assertEquals("manual_range_profile_required",s.c.enable(true,"manual_session",true,"arbitrary")["reason"])
+        assertTrue(s.frames.isEmpty())
+        s.arm("reported");assertEquals("already_enabled",s.arm("original")["reason"])
+        for(p in listOf(-5.0,-0.5,3.5,15.0)){assertEquals("rejected",s.c.request(p)["event"])}
+        assertTrue(s.frames.isEmpty());s.c.request(3.0)
+        assertEquals(3.0,s.c.snapshot()["operationalMaxPercent"])
+        assertEquals("reported",(s.c.snapshot()["authorizedRange"] as Map<*,*>)["id"])
+        s.c.stop("manual_stop",true);assertEquals("activation_rejected",s.arm("original")["event"])
+    }
+    @Test fun everyOriginalValueCanBeOrderedOnlyInsideAuthorizedNativeProfile() {
+        for(profile in ManualRangeProfile.entries) {
+            val s=Sim();s.arm(profile.wireName)
+            for(i in -10..30) {
+                val p=i/2.0;s.time+=1000
+                val before=s.frames.size;val result=s.c.request(p)
+                if(profile.accepts(p)) {
+                    assertEquals("api_returned",result["event"])
+                    assertEquals(hex(encodePro1Slope(p)),s.frames.last())
+                } else {assertEquals("rejected",result["event"]);assertEquals(before,s.frames.size)}
+            }
+            for(p in listOf(-5.5,15.5,0.25,Double.NaN,Double.POSITIVE_INFINITY)) {
+                val before=s.frames.size;s.c.request(p);assertEquals(before,s.frames.size)
+            }
+            val enabled=s.events.single{it["event"]=="enabled"}
+            assertEquals(profile.wireName,(enabled["authorizedRange"] as Map<*,*>)["id"])
+            assertEquals(false,(enabled["authorizedRange"] as Map<*,*>)["allValuesPhysicallyValidated"])
+        }
     }
     @Test fun twoHoursRefreshCurrentGoalWithoutDeadlineAndStopLeavesNoScheduledSends() {
         val s=Sim();s.arm();s.c.request(15.0)

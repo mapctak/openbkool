@@ -190,3 +190,9 @@ La decisión posterior al ensayo físico 1.3.1 está en
 perfil prolongado supervisado 0/+0,5 %, con consentimiento específico.
 El rango físico completo `manual_session` sigue bloqueado; las conclusiones
 históricas de este documento no constituyen autorización de ese rango.
+
+## Evolución 1.4.0+18
+
+[Control manual por perfiles 1.4](control_manual_1_4.md) sustituye el bloqueo
+histórico del rango físico completo por autorización experimental explícita
+por sesión. No representa una nueva garantía de entrega RF o aplicación física.

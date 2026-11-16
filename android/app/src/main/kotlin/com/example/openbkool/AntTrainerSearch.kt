@@ -96,18 +96,18 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         try { session.worker.execute { session.prepareSlope(percent, result) } }
         catch (_: RejectedExecutionException) { result.error("session_closed", "Sesión cerrada", null) }
     }
-    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String? = "trial_30s", experimentalConfirmed: Boolean = false) {
+    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String? = "trial_30s", experimentalConfirmed: Boolean = false, rangeProfile: String? = null) {
         val session = active
         if (!training || session == null) { result.error("not_connected", "No hay entrenamiento activo", null); return }
         val queued = method != "stopManualTest"
         if (!queued && session.id == sessionId) {
             session.cancelled = true; session.invalidateTargets("manual_stop")
         }
-        if (queued) session.commandFence.enqueue()
+        if (queued && !session.commandFence.tryEnqueue()) { result.error("command_busy", "Ya hay una orden pendiente; no se encola otra", null); return }
         try { session.worker.execute {
             val cancelled = if (queued) session.commandFence.dequeue() else null
             if (cancelled != null) session.rejectPending(method, percent, cancelled, result)
-            else session.manualAction(method, sessionId, explicit, percent, result, controlMode, experimentalConfirmed)
+            else session.manualAction(method, sessionId, explicit, percent, result, controlMode, experimentalConfirmed, rangeProfile)
         } }
         catch (_: RejectedExecutionException) {
             if (queued) session.commandFence.dequeue()
@@ -279,14 +279,14 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             publish()
             result.error("command_cancelled", "Orden cancelada por parada: $reason", null)
         }
-        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String?, experimentalConfirmed: Boolean) {
+        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String?, experimentalConfirmed: Boolean, rangeProfile: String?) {
             if (sessionId != id) { result.error("stale_session", "La sesión ha cambiado; vuelve a conectar", null); return }
             if (finished || stopping || (cancelled && method != "stopManualTest")) {
                 result.error("session_stopping", "La sesión está cerrándose", null); return
             }
             when (method) {
                 "enableManualTest" -> {
-                    val activation = manual.enable(explicit, controlMode, experimentalConfirmed)
+                    val activation = manual.enable(explicit, controlMode, experimentalConfirmed, rangeProfile)
                     if (activation["event"] == "enabled" && controlMode == "refresh_trial_30s") {
                         val remaining = manual.snapshot()["remainingMs"] as Long
                         val deadline = Runnable {
@@ -361,8 +361,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                         "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
             }
             val report = mapOf(
-                "controlDiagnosticsVersion" to 9,
-                "experimentalSlopePolicy" to mapOf("physicalMaxPercent" to ManualControlPolicy.MAX_PERCENT,
+                "controlDiagnosticsVersion" to 10,
+                "experimentalSlopePolicy" to mapOf("scope" to "legacy_isolated_trials_only", "physicalMaxPercent" to ManualControlPolicy.MAX_PERCENT,
                     "isolatedMaxPercent" to 3.0, "isolatedMaxTwoPercentRequests" to 1, "isolatedMaxThreePercentRequests" to 1,
                     "twoPercentEnabled" to true, "threePercentEnabled" to true, "fourPercentEnabled" to false,
                     "twoPercentReason" to "isolated_mode_and_additional_confirmation_required",
@@ -389,8 +389,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     "minPercent" to ManualControlPolicy.FULL_MIN_PERCENT, "maxPercent" to ManualControlPolicy.FULL_MAX_PERCENT,
                     "stepPercent" to ManualControlPolicy.STEP_PERCENT, "maxDurationMs" to null,
                     "refreshMs" to ManualControlPolicy.REFRESH_MS,
-                    "blockReason" to "manual_session_stop_and_radio_buffer_validation_required"),
-                "controlModes" to mapOf("default" to "trial_30s", "continuousPhysicalEnabled" to ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED),
+                    "profiles" to ManualRangeProfile.entries.map { it.toMap() },
+                    "consentRequiredPerSession" to true, "radioOrderingVerified" to false,
+                    "physicalResponseReportedPoints" to listOf(0.0, 0.5, 1.0, 2.0, 3.0),
+                    "blockReason" to null),
+                "controlModes" to mapOf("default" to "trial_30s", "homeMode" to "manual_session", "homeRangeProfile" to "reported", "continuousPhysicalEnabled" to ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED),
                 "identificationTiming" to if (training) identificationTiming.snapshot() else null,
                 "reportSequence" to ++reportSequence,
                 "channelIdentity" to mapOf("selected" to target.toMap(), "configured" to configuredChannelId,

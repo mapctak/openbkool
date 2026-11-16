@@ -39,7 +39,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "enableManualTest", "setManualSlope", "stopManualTest" -> session.manualAction(call.method,
                     call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
-                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true)
+                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true, call.argument<String>("rangeProfile"))
                 "stop" -> {
                     val requested = call.argument<String>("reason")
                     val reason = requested?.takeIf { it in setOf("screen_closed", "app_background", "controller_disposed", "user_finish") } ?: "stopped"

@@ -170,6 +170,7 @@ class AntTrainerSearchController extends ChangeNotifier {
     bool confirmed = false,
     String controlMode = 'trial_30s',
     bool experimentalConfirmed = false,
+    String? rangeProfile,
     String? expectedSessionId,
   }) async {
     final stopping = method == 'stopManualTest';
@@ -192,6 +193,7 @@ class AntTrainerSearchController extends ChangeNotifier {
             if (method == 'enableManualTest') 'controlMode': controlMode,
             if (method == 'enableManualTest')
               'experimentalConfirmed': experimentalConfirmed,
+            if (method == 'enableManualTest') 'rangeProfile': rangeProfile,
             'percent': ?percent,
           })
           .timeout(const Duration(seconds: 20));

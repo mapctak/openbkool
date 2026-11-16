@@ -23,6 +23,7 @@ void main() {
     'manualSessionPolicy': {'physicalEnabled': allowed},
     'manualControl': {
       'mode': 'manual_session',
+      'authorizedRange': {'id': 'original', 'minPercent': -5, 'maxPercent': 15},
       'enabled': active,
       'eligible': true,
       'state': active ? 'active' : 'available',
@@ -93,15 +94,12 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Control manual 1.3'), 250);
-    await tester.tap(find.text('Control manual 1.3'));
+    await tester.scrollUntilVisible(find.text('Control manual 1.4'), 250);
+    await tester.tap(find.text('Control manual 1.4'));
     await tester.pumpAndSettle();
     expect(find.byType(ManualRidePage), findsOneWidget);
     expect(calls, isEmpty);
-    expect(
-      find.textContaining('Sesión prolongada supervisada'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('Selección: 41 valores.'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     session.dispose();
     messenger.setMockMethodCallHandler(c.channel, null);
@@ -150,7 +148,7 @@ void main() {
             .onPressed,
         isNull,
       );
-      expect(find.textContaining('búfer ANT'), findsOneWidget);
+      expect(find.textContaining('Sin autorización nativa'), findsOneWidget);
       expect(calls, isEmpty);
       await clean(tester, c);
     },
@@ -181,6 +179,8 @@ void main() {
       expect(calls.single.method, 'enableManualTest');
       expect((calls.single.arguments as Map)['confirmed'], true);
       expect((calls.single.arguments as Map)['controlMode'], 'manual_session');
+      expect((calls.single.arguments as Map)['rangeProfile'], 'original');
+      expect((calls.single.arguments as Map)['experimentalConfirmed'], true);
       expect(find.text('Tiempo: 2:00:00'), findsOneWidget);
       await clean(tester, c);
     },
@@ -335,7 +335,7 @@ void main() {
             )
             .items!
             .length,
-        2,
+        41,
       );
       await tester.tap(find.text('Iniciar sesión supervisada'));
       await tester.pumpAndSettle();
@@ -350,8 +350,8 @@ void main() {
       expect(find.text('Tiempo: 2:00:00'), findsOneWidget);
       expect(
         tester
-            .widget<SwitchListTile>(
-              find.byKey(const ValueKey('lowLoadProfile')),
+            .widget<DropdownButton<String>>(
+              find.byKey(const ValueKey('manualRangeProfile')),
             )
             .onChanged,
         isNull,
@@ -370,6 +370,105 @@ void main() {
       await tester.pumpAndSettle();
       expect(calls.last.method, 'stopManualTest');
       expect(calls.length, 4);
+      await clean(tester, c);
+    },
+  );
+  testWidgets(
+    'profile authorization keeps 41 previews and rejects UI escalation without RPC',
+    (tester) async {
+      final c = AntTrainerSearchController(
+        channelName: 'openbkool/range-profiles-sim',
+      );
+      c.snapshot = report(allowed: true);
+      var active = false;
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(c.channel, (call) async {
+        calls.add(call);
+        if (call.method == 'enableManualTest') active = true;
+        return {
+          ...report(allowed: true, active: active),
+          if (call.method == 'stopManualTest') 'running': false,
+          'manualControl': {
+            ...(report(allowed: true, active: active)['manualControl'] as Map),
+            'authorizedRange': {
+              'id': 'reported',
+              'minPercent': 0,
+              'maxPercent': 3,
+            },
+            if (call.method == 'setManualSlope') ...{
+              'lastRequestedPercent': (call.arguments as Map)['percent'],
+              'lastManualApiSuccess': {
+                'requestedPercent': (call.arguments as Map)['percent'],
+              },
+            },
+          },
+        };
+      });
+      await tester.binding.setSurfaceSize(const Size(1200, 2400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ManualRidePage(
+            controller: c,
+            device: device,
+            initialProfile: 'reported',
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      void select(double p) => tester
+          .widget<DropdownButton<double>>(
+            find.byKey(const ValueKey('manualRideSlope')),
+          )
+          .onChanged!(p);
+      expect(
+        tester
+            .widget<DropdownButton<double>>(
+              find.byKey(const ValueKey('manualRideSlope')),
+            )
+            .items!
+            .length,
+        41,
+      );
+      select(15);
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      await tester.tap(find.text('Autorizar sesión manual'));
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      await tester.tap(find.text('Autorizar sesión'));
+      await tester.pumpAndSettle();
+      expect(calls.single.method, 'enableManualTest');
+      expect((calls.single.arguments as Map)['rangeProfile'], 'reported');
+      expect((calls.single.arguments as Map)['experimentalConfirmed'], true);
+      expect(
+        tester
+            .widget<DropdownButton<String>>(
+              find.byKey(const ValueKey('manualRangeProfile')),
+            )
+            .onChanged,
+        isNull,
+      );
+      for (final p in [-5.0, 3.5, 15.0]) {
+        select(p);
+        await tester.pumpAndSettle();
+      }
+      expect(calls.length, 1);
+      expect(find.textContaining('Solo previsualización:'), findsOneWidget);
+      select(3);
+      await tester.pumpAndSettle();
+      expect(find.text('Pendiente ordenada: +3,0 %'), findsOneWidget);
+      expect(find.text('Pendiente solicitada: +3,0 %'), findsOneWidget);
+      select(-5);
+      await tester.pumpAndSettle();
+      expect(calls.length, 2);
+      expect(find.text('Pendiente ordenada: +3,0 %'), findsOneWidget);
+      await tester.tap(find.text('LLANO 0 %'));
+      await tester.pumpAndSettle();
+      expect((calls.last.arguments as Map)['percent'], 0);
+      await tester.tap(find.text('DETENER CONTROL'));
+      await tester.pumpAndSettle();
+      expect(calls.last.method, 'stopManualTest');
       await clean(tester, c);
     },
   );

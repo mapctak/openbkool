@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicReference
  * Raising either bound requires reviewed physical transmission and stop evidence. */
 internal object ManualControlPolicy {
     const val CONTINUOUS_PHYSICAL_ENABLED = false
-    const val MANUAL_SESSION_PHYSICAL_ENABLED = false
+    const val MANUAL_SESSION_PHYSICAL_ENABLED = true
     const val FULL_MIN_PERCENT = -5.0
     const val FULL_MAX_PERCENT = 15.0
     const val REFRESH_MS = 5000L
@@ -27,6 +27,15 @@ internal enum class ManualControlMode(val wireName: String, val maxDurationMs: L
     CONTINUOUS("continuous_experimental", null);
     val refreshes: Boolean get() = this == MANUAL_SESSION || this == REFRESH_TRIAL || this == LOW_LOAD
     val isolatedTarget: Double? get() = when(this) { ISOLATED_TWO -> 2.0; ISOLATED_THREE -> 3.0; else -> null }
+    companion object { fun parse(value: String?) = entries.firstOrNull { it.wireName == value } }
+}
+
+/** Per-session authorization, not a claim that every value was physically measured. */
+internal enum class ManualRangeProfile(val wireName: String, val min: Double, val max: Double) {
+    LOW("low", 0.0, 0.5), REPORTED("reported", 0.0, 3.0), ORIGINAL("original", -5.0, 15.0);
+    fun accepts(percent: Double) = percent.isFinite() && percent in min..max && percent * 2 == (percent * 2).toInt().toDouble()
+    fun toMap(): Map<String, Any?> = mapOf("id" to wireName, "minPercent" to min, "maxPercent" to max,
+        "stepPercent" to 0.5, "experimental" to true, "allValuesPhysicallyValidated" to false)
     companion object { fun parse(value: String?) = entries.firstOrNull { it.wireName == value } }
 }
 
@@ -120,6 +129,7 @@ internal class ManualAntControl(
     private var activatedAt: Long? = null
     private var endedAt: Long? = null
     private var mode = ManualControlMode.TRIAL
+    private var authorizedRange: ManualRangeProfile? = null
     private var twoPercentAttempted = false
     private var threePercentAttempted = false
     private var terminalAbort: String? = null
@@ -164,7 +174,8 @@ internal class ManualAntControl(
         closeComplete = true; closeFailed = !clean
         supervise()
     }
-    fun enable(explicit: Boolean, requestedMode: String? = ManualControlMode.TRIAL.wireName, experimentalConfirmed: Boolean = false): Map<String, Any?> {
+    fun enable(explicit: Boolean, requestedMode: String? = ManualControlMode.TRIAL.wireName, experimentalConfirmed: Boolean = false, rangeProfile: String? = null): Map<String, Any?> {
+        val selectedRange = ManualRangeProfile.parse(rangeProfile)
         val selectedMode = ManualControlMode.parse(requestedMode)
         val reason = when {
             !explicit -> "explicit_activation_required"
@@ -176,6 +187,8 @@ internal class ManualAntControl(
             selectedMode == ManualControlMode.LOW_LOAD && !experimentalConfirmed -> "low_load_risk_consent_required"
             selectedMode == ManualControlMode.LOW_LOAD && !ManualControlPolicy.LOW_LOAD_PHYSICAL_ENABLED -> "low_load_disabled"
             selectedMode == ManualControlMode.MANUAL_SESSION && !manualSessionAllowed -> "manual_session_stop_and_radio_buffer_validation_required"
+            selectedMode == ManualControlMode.MANUAL_SESSION && !experimentalConfirmed -> "manual_range_risk_consent_required"
+            selectedMode == ManualControlMode.MANUAL_SESSION && selectedRange == null -> "manual_range_profile_required"
             selectedMode == ManualControlMode.CONTINUOUS && !continuousAllowed -> "continuous_physical_validation_required"
             stopped || faulted || stopIntent.get() != null -> "session_requires_reconnect"
             enabled -> "already_enabled"
@@ -183,11 +196,12 @@ internal class ManualAntControl(
         }
         if (reason != null) return event("activation_rejected", mapOf("reason" to reason))
         mode = selectedMode!!
+        authorizedRange = if (mode == ManualControlMode.MANUAL_SESSION) selectedRange else null
         enabled = true; everEnabled = true; activatedAt = clock()
         deadline = mode.maxDurationMs?.let { activatedAt!! + it }
         supervise()
         return event("enabled", mapOf("mode" to mode.wireName, "maxDurationMs" to mode.maxDurationMs, "noCommandSent" to true,
-            "experimentalConfirmed" to experimentalConfirmed))
+            "experimentalConfirmed" to experimentalConfirmed, "authorizedRange" to authorizedRange?.toMap()))
     }
     fun abortReason(): String? {
         if (!enabled) return null
@@ -200,6 +214,8 @@ internal class ManualAntControl(
         val value = percent.takeIf { it.isFinite() }
         lastRequested = value
         event("request", mapOf("attempt" to attempts, "requestedPercent" to value))
+        if (mode == ManualControlMode.MANUAL_SESSION && authorizedRange?.accepts(percent) != true)
+            return event("rejected", mapOf("reason" to "slope_outside_authorized_profile", "authorizedRange" to authorizedRange?.toMap(), "apiCalled" to false))
         if ((mode == ManualControlMode.REFRESH_TRIAL || mode == ManualControlMode.LOW_LOAD) && percent != 0.0 && percent != 0.5)
             return event("rejected", mapOf("reason" to if (mode == ManualControlMode.LOW_LOAD) "low_load_only_zero_or_half" else "refresh_trial_only_zero_or_half", "apiCalled" to false))
         if (mode != ManualControlMode.MANUAL_SESSION && percent in listOf(2.0,3.0,4.0) && percent != mode.isolatedTarget) return event("rejected", mapOf(
@@ -299,8 +315,10 @@ internal class ManualAntControl(
             "stopped" to stopped, "faulted" to faulted, "eligible" to reasons.isEmpty(),
             "unavailableReason" to reasons.firstOrNull(), "blockingReasons" to reasons,
             "link" to current.toMap(), "remainingMs" to deadline?.let { (it - now).coerceAtLeast(0) },
+            "authorizedRange" to authorizedRange?.toMap(),
+            "operationalMinPercent" to (authorizedRange?.min ?: 0.0),
             "mode" to mode.wireName, "elapsedControlMs" to activatedAt?.let { (endedAt ?: now) - it },
-            "maxDurationMs" to mode.maxDurationMs, "operationalMaxPercent" to (if (mode == ManualControlMode.MANUAL_SESSION) ManualControlPolicy.FULL_MAX_PERCENT else if (mode == ManualControlMode.REFRESH_TRIAL || mode == ManualControlMode.LOW_LOAD) 0.5 else mode.isolatedTarget ?: ManualControlPolicy.MAX_PERCENT),
+            "maxDurationMs" to mode.maxDurationMs, "operationalMaxPercent" to (if (mode == ManualControlMode.MANUAL_SESSION) authorizedRange?.max else if (mode == ManualControlMode.REFRESH_TRIAL || mode == ManualControlMode.LOW_LOAD) 0.5 else mode.isolatedTarget ?: ManualControlPolicy.MAX_PERCENT),
             "isolatedTargetPercent" to mode.isolatedTarget,
             "isolatedTargetAttempted" to (twoPercentAttempted || threePercentAttempted),
             "threePercentAttempted" to threePercentAttempted, "twoPercentAttempted" to twoPercentAttempted, "stepPercent" to ManualControlPolicy.STEP_PERCENT,

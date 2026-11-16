@@ -42,7 +42,7 @@ class RefreshTrialTest {
         assertEquals("enabled",s.arm("manual_low_load")["event"])
         assertTrue(s.calls.isEmpty());assertNull(s.c.snapshot()["maxDurationMs"])
         for(p in listOf(-5.0,-0.5,0.25,1.0,2.0,3.0,4.0,15.0,Double.NaN))s.c.request(p)
-        assertTrue(s.calls.isEmpty());assertFalse(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
+        assertTrue(s.calls.isEmpty());assertTrue(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
         assertFalse(ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED)
         val blocked=Sim()
         assertEquals("activation_rejected",blocked.arm("manual_session")["event"])
@@ -82,8 +82,8 @@ class RefreshTrialTest {
         for(p in listOf(-0.5,0.25,1.0,2.0,3.0,15.0,Double.NaN)){s.c.request(p)}
         assertTrue(s.calls.isEmpty());assertEquals(30000L,s.c.snapshot()["maxDurationMs"])
         assertEquals(0.5,s.c.snapshot()["operationalMaxPercent"])
-        assertEquals("manual_session_stop_and_radio_buffer_validation_required",s.c.enable(true,"manual_session")["reason"])
-        assertFalse(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
+        assertEquals("manual_range_risk_consent_required",s.c.enable(true,"manual_session")["reason"])
+        assertTrue(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
     }
     @Test fun refreshesAreFiveSecondsApartAndDeadlineBlocksEvenDueRefresh() {
         val s=Sim();s.arm();s.tick(4000);assertTrue(s.calls.isEmpty())

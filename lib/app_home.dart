@@ -274,9 +274,9 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                     child: ListTile(
                       contentPadding: const EdgeInsets.all(20),
                       leading: const Icon(Icons.tune, color: emerald, size: 32),
-                      title: const Text('Control manual 1.3'),
+                      title: const Text('Control manual 1.4'),
                       subtitle: const Text(
-                        'Sesión supervisada 0/+0,5 % · duración a tu cargo',
+                        '41 pendientes · perfiles por sesión · sin caducidad fija',
                       ),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: session.loading
@@ -285,7 +285,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                               MaterialPageRoute(
                                 builder: (_) => ManualRidePage(
                                   controller: session.training,
-                                  lowLoad: true,
+                                  initialProfile: 'reported',
                                   device: session.selected.toJson(),
                                 ),
                               ),
