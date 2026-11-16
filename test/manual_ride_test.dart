@@ -98,7 +98,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(ManualRidePage), findsOneWidget);
     expect(calls, isEmpty);
-    expect(find.textContaining('bloqueado para uso físico'), findsOneWidget);
+    expect(
+      find.textContaining('Sesión prolongada supervisada'),
+      findsOneWidget,
+    );
     await tester.pumpWidget(const SizedBox());
     session.dispose();
     messenger.setMockMethodCallHandler(c.channel, null);
@@ -282,6 +285,91 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
       expect((calls.last.arguments as Map)['reason'], 'screen_closed');
+      await clean(tester, c);
+    },
+  );
+  testWidgets(
+    'low load requires consent, survives 30 seconds and cannot escalate profile',
+    (tester) async {
+      final c = AntTrainerSearchController(
+        channelName: 'openbkool/low-load-sim',
+      );
+      Map<String, Object?> lowReport(bool active) => {
+        ...report(active: active),
+        'lowLoadPolicy': {'physicalEnabled': true},
+        'manualControl': {
+          ...(report(active: active)['manualControl'] as Map),
+          'mode': 'manual_low_load',
+        },
+      };
+      c.snapshot = lowReport(false);
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(c.channel, (call) async {
+        calls.add(call);
+        return {
+          ...lowReport(true),
+          if (call.method == 'stopManualTest') 'running': false,
+          'manualControl': {
+            ...(lowReport(true)['manualControl'] as Map),
+            if (call.method == 'setManualSlope')
+              'lastManualApiSuccess': {
+                'requestedPercent': (call.arguments as Map)['percent'],
+                'stopRequest': false,
+              },
+          },
+        };
+      });
+      await tester.binding.setSurfaceSize(const Size(1200, 2400));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ManualRidePage(controller: c, device: device, lowLoad: true),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      expect(
+        tester
+            .widget<DropdownButton<double>>(
+              find.byKey(const ValueKey('manualRideSlope')),
+            )
+            .items!
+            .length,
+        2,
+      );
+      await tester.tap(find.text('Iniciar sesión supervisada'));
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      await tester.tap(
+        find.widgetWithText(FilledButton, 'Autorizar sesión supervisada'),
+      );
+      await tester.pumpAndSettle();
+      expect(calls.single.method, 'enableManualTest');
+      expect((calls.single.arguments as Map)['controlMode'], 'manual_low_load');
+      expect((calls.single.arguments as Map)['experimentalConfirmed'], true);
+      expect(find.text('Tiempo: 2:00:00'), findsOneWidget);
+      expect(
+        tester
+            .widget<SwitchListTile>(
+              find.byKey(const ValueKey('lowLoadProfile')),
+            )
+            .onChanged,
+        isNull,
+      );
+      tester
+          .widget<DropdownButton<double>>(
+            find.byKey(const ValueKey('manualRideSlope')),
+          )
+          .onChanged!(0.5);
+      await tester.pumpAndSettle();
+      expect(find.text('Pendiente ordenada: +0,5 %'), findsOneWidget);
+      await tester.tap(find.text('LLANO 0 %'));
+      await tester.pumpAndSettle();
+      expect((calls.last.arguments as Map)['percent'], 0);
+      await tester.tap(find.text('DETENER CONTROL'));
+      await tester.pumpAndSettle();
+      expect(calls.last.method, 'stopManualTest');
+      expect(calls.length, 4);
       await clean(tester, c);
     },
   );

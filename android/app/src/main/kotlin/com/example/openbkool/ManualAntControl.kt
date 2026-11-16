@@ -11,6 +11,7 @@ internal object ManualControlPolicy {
     const val FULL_MAX_PERCENT = 15.0
     const val REFRESH_MS = 5000L
     const val REFRESH_TRIAL_PHYSICAL_ENABLED = true
+    const val LOW_LOAD_PHYSICAL_ENABLED = true
     const val MAX_PERCENT = 1.0
     const val STEP_PERCENT = 0.5
     const val MAX_DURATION_MS = 30000L
@@ -21,9 +22,10 @@ internal enum class ManualControlMode(val wireName: String, val maxDurationMs: L
     ISOLATED_TWO("isolated_two_percent", ManualControlPolicy.MAX_DURATION_MS),
     ISOLATED_THREE("isolated_three_percent", ManualControlPolicy.MAX_DURATION_MS),
     REFRESH_TRIAL("refresh_trial_30s", ManualControlPolicy.MAX_DURATION_MS),
+    LOW_LOAD("manual_low_load", null),
     MANUAL_SESSION("manual_session", null),
     CONTINUOUS("continuous_experimental", null);
-    val refreshes: Boolean get() = this == MANUAL_SESSION || this == REFRESH_TRIAL
+    val refreshes: Boolean get() = this == MANUAL_SESSION || this == REFRESH_TRIAL || this == LOW_LOAD
     val isolatedTarget: Double? get() = when(this) { ISOLATED_TWO -> 2.0; ISOLATED_THREE -> 3.0; else -> null }
     companion object { fun parse(value: String?) = entries.firstOrNull { it.wireName == value } }
 }
@@ -171,6 +173,8 @@ internal class ManualAntControl(
             selectedMode == ManualControlMode.ISOLATED_THREE && !experimentalConfirmed -> "isolated_three_confirmation_required"
             selectedMode == ManualControlMode.REFRESH_TRIAL && !experimentalConfirmed -> "refresh_trial_confirmation_required"
             selectedMode == ManualControlMode.REFRESH_TRIAL && !ManualControlPolicy.REFRESH_TRIAL_PHYSICAL_ENABLED -> "refresh_trial_disabled"
+            selectedMode == ManualControlMode.LOW_LOAD && !experimentalConfirmed -> "low_load_risk_consent_required"
+            selectedMode == ManualControlMode.LOW_LOAD && !ManualControlPolicy.LOW_LOAD_PHYSICAL_ENABLED -> "low_load_disabled"
             selectedMode == ManualControlMode.MANUAL_SESSION && !manualSessionAllowed -> "manual_session_stop_and_radio_buffer_validation_required"
             selectedMode == ManualControlMode.CONTINUOUS && !continuousAllowed -> "continuous_physical_validation_required"
             stopped || faulted || stopIntent.get() != null -> "session_requires_reconnect"
@@ -196,8 +200,8 @@ internal class ManualAntControl(
         val value = percent.takeIf { it.isFinite() }
         lastRequested = value
         event("request", mapOf("attempt" to attempts, "requestedPercent" to value))
-        if (mode == ManualControlMode.REFRESH_TRIAL && percent != 0.0 && percent != 0.5)
-            return event("rejected", mapOf("reason" to "refresh_trial_only_zero_or_half", "apiCalled" to false))
+        if ((mode == ManualControlMode.REFRESH_TRIAL || mode == ManualControlMode.LOW_LOAD) && percent != 0.0 && percent != 0.5)
+            return event("rejected", mapOf("reason" to if (mode == ManualControlMode.LOW_LOAD) "low_load_only_zero_or_half" else "refresh_trial_only_zero_or_half", "apiCalled" to false))
         if (mode != ManualControlMode.MANUAL_SESSION && percent in listOf(2.0,3.0,4.0) && percent != mode.isolatedTarget) return event("rejected", mapOf(
             "reason" to "experimental_level_not_authorized", "requestedPercent" to percent,
             "attempt" to attempts, "apiCalled" to false))
@@ -296,10 +300,11 @@ internal class ManualAntControl(
             "unavailableReason" to reasons.firstOrNull(), "blockingReasons" to reasons,
             "link" to current.toMap(), "remainingMs" to deadline?.let { (it - now).coerceAtLeast(0) },
             "mode" to mode.wireName, "elapsedControlMs" to activatedAt?.let { (endedAt ?: now) - it },
-            "maxDurationMs" to mode.maxDurationMs, "operationalMaxPercent" to (if (mode == ManualControlMode.MANUAL_SESSION) ManualControlPolicy.FULL_MAX_PERCENT else if (mode == ManualControlMode.REFRESH_TRIAL) 0.5 else mode.isolatedTarget ?: ManualControlPolicy.MAX_PERCENT),
+            "maxDurationMs" to mode.maxDurationMs, "operationalMaxPercent" to (if (mode == ManualControlMode.MANUAL_SESSION) ManualControlPolicy.FULL_MAX_PERCENT else if (mode == ManualControlMode.REFRESH_TRIAL || mode == ManualControlMode.LOW_LOAD) 0.5 else mode.isolatedTarget ?: ManualControlPolicy.MAX_PERCENT),
             "isolatedTargetPercent" to mode.isolatedTarget,
             "isolatedTargetAttempted" to (twoPercentAttempted || threePercentAttempted),
             "threePercentAttempted" to threePercentAttempted, "twoPercentAttempted" to twoPercentAttempted, "stepPercent" to ManualControlPolicy.STEP_PERCENT,
+            "lowLoadPhysicalEnabled" to ManualControlPolicy.LOW_LOAD_PHYSICAL_ENABLED,
             "manualSessionPhysicalEnabled" to manualSessionAllowed,
             "periodicRefreshEnabled" to (enabled && mode.refreshes && !faulted && terminalAbort == null && stopIntent.get() == null),
             "refreshTargetPercent" to if (enabled && !faulted && stopIntent.get() == null) refreshGoal else null,

@@ -92,6 +92,7 @@ class AntTrainerSearchController extends ChangeNotifier {
           'transmissionDiagnostics': null,
           'manualSessionPolicy': null,
           'refreshTrialPolicy': null,
+          'lowLoadPolicy': null,
           'radioCaptureCorrelation': null,
           'controlTransportUncertain': false,
           'manualControl': <String, Object?>{

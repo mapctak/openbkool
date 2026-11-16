@@ -182,3 +182,11 @@ Resultados de la ejecución final:
 - `git diff --check`: correcto. Sin comandos físicos durante pruebas automatizadas.
 
 APK: `build/app/outputs/flutter-apk/openbkool-1.3.0-15-debug.apk`.
+
+## Evolución 1.3.2+17
+
+La decisión posterior al ensayo físico 1.3.1 está en
+[control_prolongado_1_3_2.md](control_prolongado_1_3_2.md): se habilita solo el
+perfil prolongado supervisado 0/+0,5 %, con consentimiento específico.
+El rango físico completo `manual_session` sigue bloqueado; las conclusiones
+históricas de este documento no constituyen autorización de ese rango.

@@ -276,7 +276,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                       leading: const Icon(Icons.tune, color: emerald, size: 32),
                       title: const Text('Control manual 1.3'),
                       subtitle: const Text(
-                        '−5 % a +15 % · preparado, uso físico bloqueado',
+                        'Sesión supervisada 0/+0,5 % · duración a tu cargo',
                       ),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: session.loading
@@ -285,6 +285,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                               MaterialPageRoute(
                                 builder: (_) => ManualRidePage(
                                   controller: session.training,
+                                  lowLoad: true,
                                   device: session.selected.toJson(),
                                 ),
                               ),

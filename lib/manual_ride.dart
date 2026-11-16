@@ -23,10 +23,11 @@ class ManualRidePage extends StatefulWidget {
     required this.controller,
     required this.device,
     this.refreshTrial = false,
+    this.lowLoad = false,
   });
   final AntTrainerSearchController controller;
   final Map<String, Object?> device;
-  final bool refreshTrial;
+  final bool refreshTrial, lowLoad;
 
   @override
   State<ManualRidePage> createState() => _ManualRidePageState();
@@ -37,16 +38,24 @@ class _ManualRidePageState extends State<ManualRidePage>
   double selected = 0;
   String? sessionId;
   bool backgroundStopRequested = false;
-  String get mode =>
-      widget.refreshTrial ? 'refresh_trial_30s' : 'manual_session';
-  String get policyKey =>
-      widget.refreshTrial ? 'refreshTrialPolicy' : 'manualSessionPolicy';
+  late bool lowLoad;
+  String get mode => widget.refreshTrial
+      ? 'refresh_trial_30s'
+      : lowLoad
+      ? 'manual_low_load'
+      : 'manual_session';
+  String get policyKey => widget.refreshTrial
+      ? 'refreshTrialPolicy'
+      : lowLoad
+      ? 'lowLoadPolicy'
+      : 'manualSessionPolicy';
   List<double> get slopes =>
-      widget.refreshTrial ? const [0, 0.5] : manualRideSlopes;
+      widget.refreshTrial || lowLoad ? const [0, 0.5] : manualRideSlopes;
 
   @override
   void initState() {
     super.initState();
+    lowLoad = widget.lowLoad && !widget.refreshTrial;
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -109,11 +118,15 @@ class _ManualRidePageState extends State<ManualRidePage>
         title: Text(
           widget.refreshTrial
               ? 'Autorizar ensayo de reenvío'
+              : lowLoad
+              ? 'Autorizar sesión supervisada'
               : 'Iniciar control manual',
         ),
         content: Text(
           widget.refreshTrial
               ? 'Autorizo este ensayo de 30 segundos, solo 0 % y +0,5 %, con reenvíos del objetivo vigente cada 5 segundos. Activar no transmite. Usaré Detener control para comprobar la parada; si no disminuye la resistencia, dejaré de pedalear según la recuperación ya comprobada. API y TX no confirman aplicación física. No habilita el modo ilimitado.'
+              : lowLoad
+              ? 'Autorizo una sesión supervisada sin caducidad de 30 s, solo 0 % y +0,5 %, con reenvío cada 5 s. El orden de radio y la resistencia física no están confirmados. Mantendré accesible DETENER CONTROL y la salida independiente del esfuerzo ya comprobada. Detener, perder enlace o pasar a segundo plano finaliza el control; no se reactiva automáticamente. La página 0x11 no certifica resistencia aplicada.'
               : 'Autorizo esta sesión manual de −5 % a +15 %, sin caducidad fija. Las órdenes se refrescan aproximadamente cada 5 segundos. La API no confirma resistencia física. LLANO solicita pendiente cero; Detener finaliza el control sin garantizar resistencia cero.',
         ),
         actions: [
@@ -124,7 +137,11 @@ class _ManualRidePageState extends State<ManualRidePage>
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
             child: Text(
-              widget.refreshTrial ? 'Autorizar ensayo' : 'Autorizar sesión',
+              widget.refreshTrial
+                  ? 'Autorizar ensayo'
+                  : lowLoad
+                  ? 'Autorizar sesión supervisada'
+                  : 'Autorizar sesión',
             ),
           ),
         ],
@@ -135,7 +152,7 @@ class _ManualRidePageState extends State<ManualRidePage>
         'enableManualTest',
         confirmed: true,
         controlMode: mode,
-        experimentalConfirmed: widget.refreshTrial,
+        experimentalConfirmed: widget.refreshTrial || lowLoad,
         expectedSessionId: sid,
       );
     }
@@ -253,12 +270,36 @@ class _ManualRidePageState extends State<ManualRidePage>
           body: ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              if (!widget.refreshTrial)
+                SwitchListTile(
+                  key: const ValueKey('lowLoadProfile'),
+                  title: const Text('Sesión supervisada 0/+0,5 %'),
+                  subtitle: const Text(
+                    'Sin límite fijo de duración. Desactivar solo previsualiza el rango original bloqueado.',
+                  ),
+                  value: lowLoad,
+                  onChanged:
+                      m['enabled'] == true || c.commandBusy || c.manualStopping
+                      ? null
+                      : (value) {
+                          setState(() {
+                            lowLoad = value;
+                            selected = 0;
+                          });
+                        },
+                ),
+              if (lowLoad)
+                const Text(
+                  'Sesión prolongada supervisada · máximo +0,5 %. Orden de radio y aplicación física no confirmados. El rango completo permanece bloqueado.',
+                ),
               if (!nativeAllowed)
-                const Card(
+                Card(
                   child: Padding(
                     padding: EdgeInsets.all(16),
                     child: Text(
-                      'Preparado, bloqueado para uso físico. Falta validar la parada con reenvíos y el comportamiento del búfer ANT: no está garantizado que un incremento anterior no llegue después de solicitar cero.',
+                      lowLoad
+                          ? 'Conecta el rodillo y espera las validaciones actuales del enlace antes de autorizar la sesión supervisada.'
+                          : 'Preparado, bloqueado para uso físico. Falta validar la parada con reenvíos y el comportamiento del búfer ANT: no está garantizado que un incremento anterior no llegue después de solicitar cero.',
                     ),
                   ),
                 ),
@@ -334,6 +375,8 @@ class _ManualRidePageState extends State<ManualRidePage>
               Text(
                 widget.refreshTrial
                     ? 'Ensayo acotado: máximo 30 s, solo 0 % y +0,5 %. Refresco aproximado de 5 s; no es un watchdog. Activar no transmite.'
+                    : lowLoad
+                    ? 'Solo 0 % y +0,5 %. Refresco cada 5 s; termina con DETENER CONTROL, pérdida de enlace o segundo plano. No hay reactivación automática ni caducidad de 30 s.'
                     : 'Rango de codificación original −5 % a +15 %. Respuesta física comunicada: 0 %, +0,5 %, +1 %, +2 % y +3 %. El selector en reposo solo previsualiza; no transmite.',
               ),
               if (widget.refreshTrial) ...[
@@ -369,6 +412,8 @@ class _ManualRidePageState extends State<ManualRidePage>
                 child: Text(
                   widget.refreshTrial
                       ? 'Preparar ensayo de 30 s'
+                      : lowLoad
+                      ? 'Iniciar sesión supervisada'
                       : 'Autorizar sesión manual',
                 ),
               ),

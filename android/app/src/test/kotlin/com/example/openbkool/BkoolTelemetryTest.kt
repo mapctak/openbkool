@@ -7,6 +7,36 @@ import java.time.Instant
 class BkoolTelemetryTest {
     private fun bytes(s: String) = s.split(" ").map { it.toInt(16).toByte() }.toByteArray()
     private fun frame(s: String, id: Int = 30064) = AntReceivedFrame(id, 112, 5, bytes(s))
+    @Test fun suppliedS20Page11IsRawObservationNotMechanicalAcknowledgement() {
+        val t=BkoolTelemetry(0)
+        val lines=javaClass.getResourceAsStream("/s20_refresh_1_3_1_page11.csv")!!.bufferedReader().readLines().drop(1)
+        val first=Instant.parse(lines.first().substringBefore(',')).toEpochMilli()
+        val words=mutableListOf<Int>()
+        for(line in lines) {
+            val ms=Instant.parse(line.substringBefore(',')).toEpochMilli()-first
+            assertNull(t.receive(frame(line.substringAfter(',')),ms))
+            val observation=t.snapshot(ms)["page11Observation"] as Map<*,*>
+            words.add(observation["rawWordAtBytes4And5"] as Int)
+            assertEquals(false,observation["commandAcknowledgement"])
+            assertEquals(false,observation["mechanicalConfirmation"])
+            assertFalse(observation.containsKey("appliedPercent"))
+            assertNull(t.snapshot(ms)["powerW"])
+        }
+        assertEquals(listOf(20000,20050,20050),words)
+        assertNull(BkoolTelemetry(0).snapshot(0)["page11Observation"])
+        assertNull(observeBkoolPage11(bytes("11 FF")))
+        assertNull(observeBkoolPage11(bytes("10 FF FF FF 52 4E 00 34")))
+    }
+    @Test fun page11DoesNotRefreshMetricAgesAndWrongIdentityIsIgnored() {
+        val t=BkoolTelemetry(0)
+        t.receive(frame("19 51 00 2D 23 00 40 36"),0)
+        t.receive(frame("11 FF FF FF 52 4E 00 34",1),1000)
+        assertNull(t.snapshot(1000)["page11Observation"])
+        t.receive(frame("11 FF FF FF 52 4E 00 34"),2000)
+        assertEquals(2000L,t.snapshot(2000)["powerAgeMs"])
+        val old=t.snapshot(10000)["page11Observation"] as Map<*,*>
+        assertEquals(true,old["stale"]);assertNull(t.snapshot(10000)["powerW"])
+    }
     @Test fun capturedUnitsAndPowerMask() {
         val speed = decodeBkoolPage(bytes("10 19 98 65 86 0D FF 3C"))!!
         assertEquals(12.4632, speed.speedKmh!!, 0.000001)

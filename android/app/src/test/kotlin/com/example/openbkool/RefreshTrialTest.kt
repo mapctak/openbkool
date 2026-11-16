@@ -27,12 +27,51 @@ class RefreshTrialTest {
             inApi?.invoke(b,stop)
             if(stop && failZero) throw IllegalStateException("simulated zero failed")
         },{ events.add(it);onEvent?.invoke(it) }) }
-        fun arm()=c.enable(true,"refresh_trial_30s",true)
+        fun arm(mode:String="refresh_trial_30s")=c.enable(true,mode,true)
         fun tick(t:Long){time.set(t);c.supervise();c.refreshTarget()}
         fun finish(reason:String="manual_stop") {
             c.stop(reason,link.channelOpen)
             audit.closeRequested();time.incrementAndGet();audit.closeApiReturned()
             time.incrementAndGet();audit.observe(7);c.completeStop(true)
+        }
+    }
+    @Test fun lowLoadNeedsSeparateConsentAndKeepsFullRangeBlocked() {
+        val s=Sim()
+        assertEquals("explicit_activation_required",s.c.enable(false,"manual_low_load",true)["reason"])
+        assertEquals("low_load_risk_consent_required",s.c.enable(true,"manual_low_load")["reason"])
+        assertEquals("enabled",s.arm("manual_low_load")["event"])
+        assertTrue(s.calls.isEmpty());assertNull(s.c.snapshot()["maxDurationMs"])
+        for(p in listOf(-5.0,-0.5,0.25,1.0,2.0,3.0,4.0,15.0,Double.NaN))s.c.request(p)
+        assertTrue(s.calls.isEmpty());assertFalse(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
+        assertFalse(ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED)
+        val blocked=Sim()
+        assertEquals("activation_rejected",blocked.arm("manual_session")["event"])
+    }
+    @Test fun lowLoadTwoHoursRefreshesCurrentGoalAndStopsWithoutAnyLaterOrder() {
+        val s=Sim();s.arm("manual_low_load");s.c.request(0.5)
+        for(t in 5000L..7200000L step 5000L)s.tick(t)
+        assertEquals(1441,s.calls.size);assertNull(s.c.abortReason())
+        s.time.set(7201000);s.c.request(0.0);s.tick(7205999)
+        assertEquals(1442,s.calls.size);s.tick(7206000)
+        assertEquals(hex(encodeManualSlope(0.0)),s.calls.last())
+        s.c.invalidateTargets("manual_stop");s.finish();val count=s.calls.size
+        s.tick(14400000);assertEquals(count,s.calls.size)
+        assertEquals("activation_rejected",s.arm("manual_low_load")["event"])
+    }
+    @Test fun lowLoadLossAndBackgroundRemainTerminalAndZeroFailureVisible() {
+        for(reason in listOf("app_background","screen_closed","manual_stop")) {
+            val s=Sim();s.arm("manual_low_load");s.c.request(0.5)
+            s.c.invalidateTargets(reason);s.failZero=true;s.finish(reason);s.tick(60000)
+            assertEquals("zero_api_error",s.c.snapshot()["stopResult"])
+            assertEquals("error",s.c.snapshot()["state"]);assertEquals(2,s.calls.size)
+        }
+        for(bad in listOf(ManualControlLink(true,true,67,22,3000,false),
+            ManualControlLink(true,true,67,22,0,true,channelOpen=false),
+            ManualControlLink(true,true,67,24,0,true))) {
+            val s=Sim();s.arm("manual_low_load");s.c.request(0.5);s.link=bad;s.tick(5000)
+            assertNotNull(s.c.abortReason());assertEquals(1,s.calls.size)
+            s.link=ManualControlLink(true,true,67,22,0,true);s.tick(60000)
+            assertEquals(1,s.calls.size)
         }
     }
     @Test fun trialRequiresConsentAndOnlyZeroOrHalfAndNeverUnlocksUnlimited() {
