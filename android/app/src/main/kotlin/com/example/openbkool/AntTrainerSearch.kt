@@ -49,7 +49,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         sink = events
         events.success(latest)
     }
-    override fun onCancel(arguments: Any?) { sink = null; stop() }
+    override fun onCancel(arguments: Any?) { sink = null; stop(reason = "event_stream_closed") }
     fun snapshot(): Map<String, Any?> = latest
 
     fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null) {
@@ -81,12 +81,13 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         result.success(mapOf("accepted" to true))
     }
 
-    fun stop(result: MethodChannel.Result? = null) {
+    fun stop(result: MethodChannel.Result? = null, reason: String = "stopped") {
         val session = active
         if (session == null) { result?.success(latest); return }
         session.cancelled = true
+        session.commandFence.cancel(reason)
         try {
-            session.worker.execute { session.end("stopped", result) }
+            session.worker.execute { session.end(reason, result) }
         } catch (_: RejectedExecutionException) { result?.success(latest) }
     }
     fun prepareSlope(percent: Double, result: MethodChannel.Result) {
@@ -95,12 +96,23 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         try { session.worker.execute { session.prepareSlope(percent, result) } }
         catch (_: RejectedExecutionException) { result.error("session_closed", "Sesión cerrada", null) }
     }
-    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result) {
+    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String? = "trial_30s", experimentalConfirmed: Boolean = false) {
         val session = active
         if (!training || session == null) { result.error("not_connected", "No hay entrenamiento activo", null); return }
-        if (method == "stopManualTest" && session.id == sessionId) session.cancelled = true
-        try { session.worker.execute { session.manualAction(method, sessionId, explicit, percent, result) } }
-        catch (_: RejectedExecutionException) { result.error("session_closed", "Sesión cerrada", null) }
+        val queued = method != "stopManualTest"
+        if (!queued && session.id == sessionId) {
+            session.cancelled = true; session.commandFence.cancel("manual_stop")
+        }
+        if (queued) session.commandFence.enqueue()
+        try { session.worker.execute {
+            val cancelled = if (queued) session.commandFence.dequeue() else null
+            if (cancelled != null) session.rejectPending(method, percent, cancelled, result)
+            else session.manualAction(method, sessionId, explicit, percent, result, controlMode, experimentalConfirmed)
+        } }
+        catch (_: RejectedExecutionException) {
+            if (queued) session.commandFence.dequeue()
+            result.error("session_closed", "Sesión cerrada", null)
+        }
     }
     fun exportCsv(result: MethodChannel.Result) {
         if (active != null) { result.error("training_active", "Finaliza el entrenamiento antes de exportar", null); return }
@@ -113,10 +125,12 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             } catch (error: Exception) { main.post { result.error("csv_error", error.message, null) } }
         }.start()
     }
-    fun dispose() { stop(); sink = null }
+    fun dispose() { stop(reason = "engine_disposed"); sink = null }
 
     private inner class Session(val mode: String, val target: AntTrainerIdentity) : ServiceConnection {
         val worker = AntSerialWorker()
+        val commandFence = ManualCommandFence()
+        private val transmissionAudit = AntTransmissionAudit(android.os.SystemClock::elapsedRealtime)
         @Volatile var cancelled = false
         @Volatile private var finished = false
         @Volatile private var generation = 0
@@ -124,6 +138,9 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private var status = "running"
         private var reportSequence = 0L
         private val startedAt = now()
+        private val identificationTiming = AntIdentificationTiming(android.os.SystemClock::elapsedRealtime, target) {
+            event("identification_milestone", "${it["milestone"]}: ${it["elapsedMs"]} ms", details = it)
+        }
         val id = java.util.UUID.randomUUID().toString()
         private var stopping = false
         @Volatile private var radioDead = false
@@ -132,14 +149,15 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private var finalClose: Runnable? = null
         private val manual by lazy { ManualAntControl(target, android.os.SystemClock::elapsedRealtime,
             ::manualLink, { payload, zero ->
-                check((zero || !cancelled) && !finished && !radioDead && manualLink().reason(target) == null) { "Canal o señal no disponibles" }
+                check((zero || !cancelled) && !finished && !radioDead && transmissionAudit.channelUsable &&
+                    (if (zero) manualLink().stopReason(target) else manualLink().reason(target)) == null) { "Canal o señal no disponibles" }
                 val selectedChannel = checkNotNull(channel) { "Canal cerrado" }
                 selectedChannel.setBroadcastData(payload)
             }, { e ->
                 val entry = e + mapOf("timestamp" to now(), "sessionId" to id)
                 manualEvents.add(entry)
                 event("manual_control", entry.toString())
-            }, ::antErrorDetails) }
+            }, continuousAllowed = ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED, describeError = ::antErrorDetails) }
         private fun manualLink(): ManualControlLink {
             val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime())
             val device = devices.values.firstOrNull { it["deviceNumber"] == target.number && it["deviceType"] == target.type && it["transmissionType"] == target.transmission }
@@ -165,7 +183,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private var lastSignal: String? = null
         private val heartbeat = Runnable { submit {
             if (!finished && !cancelled && opened) {
+                manual.supervise()
                 manual.abortReason()?.let { finish(it); return@submit }
+                manual.refreshTarget()
+                if (manual.snapshot()["faulted"] == true) { finish("manual_api_error"); return@submit }
                 val signal = telemetry!!.signal(android.os.SystemClock.elapsedRealtime())
                 control.connectionVerified(dedicated && identityVerified && signal == "receiving")
                 if (signal != lastSignal) { event("signal", signal); lastSignal = signal; record("signal:$signal", null) }
@@ -237,13 +258,19 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             publish()
             result.success(plan)
         }
-        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result) {
+        fun rejectPending(method: String, percent: Double?, reason: String, result: MethodChannel.Result) {
+            event("command_cancelled", "Orden en cola cancelada: $reason", details = mapOf(
+                "method" to method, "requestedPercent" to percent, "reason" to reason, "apiCalled" to false))
+            publish()
+            result.error("command_cancelled", "Orden cancelada por parada: $reason", null)
+        }
+        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String?, experimentalConfirmed: Boolean) {
             if (sessionId != id) { result.error("stale_session", "La sesión ha cambiado; vuelve a conectar", null); return }
             if (finished || stopping || (cancelled && method != "stopManualTest")) {
                 result.error("session_stopping", "La sesión está cerrándose", null); return
             }
             when (method) {
-                "enableManualTest" -> manual.enable(explicit)
+                "enableManualTest" -> manual.enable(explicit, controlMode, experimentalConfirmed)
                 "setManualSlope" -> {
                     if (percent == null) { result.error("invalid_slope", "Pendiente numérica requerida", null); return }
                     manual.request(percent)
@@ -290,8 +317,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             }
         }
         private fun publish() {
-            if (active !== this) return
-            val manualState = manual.snapshot()
+            if (active !== this && (!finished || latest["sessionId"] != id)) return
+            val manualState = manual.snapshot() + mapOf("pendingCommands" to commandFence.snapshot()["pendingApplicationCommands"])
+            if (training) identificationTiming.availability(manualState["eligible"] == true,
+                (manualState["blockingReasons"] as? List<*>)?.filterIsInstance<String>() ?: emptyList(), !finished && !stopping)
             val signature = "${manualState["eligible"]}:${manualState["blockingReasons"]}"
             if (training && lastManualAvailability != signature) {
                 lastManualAvailability = signature
@@ -301,7 +330,26 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                         "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
             }
             val report = mapOf(
-                "controlDiagnosticsVersion" to 3,
+                "controlDiagnosticsVersion" to 7,
+                "experimentalSlopePolicy" to mapOf("physicalMaxPercent" to ManualControlPolicy.MAX_PERCENT,
+                    "isolatedMaxPercent" to 3.0, "isolatedMaxTwoPercentRequests" to 1, "isolatedMaxThreePercentRequests" to 1,
+                    "twoPercentEnabled" to true, "threePercentEnabled" to true, "fourPercentEnabled" to false,
+                    "twoPercentReason" to "isolated_mode_and_additional_confirmation_required",
+                    "threePercentReason" to "isolated_mode_and_additional_confirmation_required",
+                    "fourPercentReason" to "three_percent_physical_validation_and_new_explicit_authorization_required"),
+                "transmissionDiagnostics" to (transmissionAudit.snapshot() + mapOf(
+                    "lastManualOrder" to manualState["lastManualApiSuccess"],
+                    "lastStopCommand" to manualState["lastStopCommand"],
+                    "stopResult" to manualState["stopResult"], "lastApiResult" to (manualState["lastApiError"] ?: manualState["lastApiSuccess"]),
+                    "lastControllerResult" to manualState["lastResult"])),
+                "commandQueue" to commandFence.snapshot(),
+                "manualSessionPolicy" to mapOf("physicalEnabled" to ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED,
+                    "minPercent" to ManualControlPolicy.FULL_MIN_PERCENT, "maxPercent" to ManualControlPolicy.FULL_MAX_PERCENT,
+                    "stepPercent" to ManualControlPolicy.STEP_PERCENT, "maxDurationMs" to null,
+                    "refreshMs" to ManualControlPolicy.REFRESH_MS,
+                    "blockReason" to "manual_session_stop_and_radio_buffer_validation_required"),
+                "controlModes" to mapOf("default" to "trial_30s", "continuousPhysicalEnabled" to ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED),
+                "identificationTiming" to if (training) identificationTiming.snapshot() else null,
                 "reportSequence" to ++reportSequence,
                 "channelIdentity" to mapOf("selected" to target.toMap(), "configured" to configuredChannelId,
                     "adapterReadback" to adapterChannelId, "lastReceived" to receivedChannelId,
@@ -481,11 +529,17 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 channelCapabilities = capabilityDetails(actualCaps)
                 if (cancelled) { finish("stopped"); return }
                 operations.run("v1.setChannelEventHandler") { acquired.setChannelEventHandler(object : IAntChannelEventHandler {
-                    override fun onChannelDeath() { radioDead = true; channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("disconnected") } }
+                    override fun onChannelDeath() { transmissionAudit.died(); commandFence.cancel("channel_death"); radioDead = true; channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("disconnected") } }
                     override fun onReceiveMessage(type: MessageFromAntType, parcel: AntMessageParcel) {
                         val id = parcel.messageId; val content = parcel.messageContent.copyOf()
-                        if (type == MessageFromAntType.CHANNEL_EVENT && content.size >= 3 && content[2].toInt() and 255 == 7) {
-                            channelClosed.countDown()
+                        if (type == MessageFromAntType.CHANNEL_EVENT && content.size >= 3) {
+                            val code = content[2].toInt() and 255
+                            transmissionAudit.observe(code) // Preserve even during drain/cleanup, when worker callbacks are ignored.
+                            if (code == 1 || code == 7) {
+                                radioDead = true
+                                commandFence.cancel(if (code == 7) "channel_closed" else "search_timeout")
+                            }
+                            if (code == 7) channelClosed.countDown()
                         }
                         callback(token) { receive(type.name, id, content) }
                     }
@@ -524,7 +578,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     }
                     override fun open() {
                         if (cancelled) throw java.util.concurrent.CancellationException("Búsqueda cancelada antes de abrir")
+                        val openStarted = android.os.SystemClock.elapsedRealtime()
                         acquired.open(); opened = true
+                        transmissionAudit.opened()
+                        if (training) identificationTiming.channelOpened(android.os.SystemClock.elapsedRealtime() - openStarted)
                     }
                 }
                 if (dedicated) configureV1Dedicated(configuration, target, actualCaps.rfFrequencyMin, actualCaps.rfFrequencyMax, operations)
@@ -570,6 +627,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             }
             if (training && decoded != null) {
                 if (!identityVerified) { identityVerified = true; event("identity_verified", "Identidad extendida recibida coincide con $target") }
+                identificationTiming.receive(decoded)
                 telemetry!!.receive(decoded, android.os.SystemClock.elapsedRealtime())
                 control.connectionVerified(dedicated)
                 record("page", decoded.payload)
@@ -627,12 +685,17 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     }
                 }
                 if (opened) actions.add {
-                    if (channelClosed.count != 0L) operations.run("cleanup.closeChannel") { c.close() }
+                    if (channelClosed.count != 0L) operations.run("cleanup.closeChannel") {
+                        transmissionAudit.closeRequested()
+                        c.close()
+                        transmissionAudit.closeApiReturned()
+                    }
                     operations.run("cleanup.awaitChannelClosed", mapOf("timeoutSeconds" to 3)) {
-                        if (!channelClosed.await(3, TimeUnit.SECONDS)) throw IllegalStateException("No se confirmó CHANNEL_CLOSED en 3 s")
+                        if (!channelClosed.await(3, TimeUnit.SECONDS) || transmissionAudit.snapshot()["channelClosedEventAtMs"] == null)
+                            throw IllegalStateException("No se confirmó CHANNEL_CLOSED en 3 s (muerte del canal no equivale al evento)")
                     }
                 }
-                if (assigned) actions.add { if (!opened || channelClosed.count == 0L) operations.run("cleanup.unassignChannel") { c.unassign() } }
+                if (assigned) actions.add { if (!opened || transmissionAudit.snapshot()["channelClosedEventAtMs"] != null) operations.run("cleanup.unassignChannel") { c.unassign() } }
                 actions.add { operations.run("cleanup.releaseChannel") { c.release() } }
             }
             if (bound) actions.add { operations.run("cleanup.unbindService") { context.unbindService(this) } }
@@ -662,9 +725,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         fun finish(reason: String) {
             if (finished || stopping) return
             stopping = true; cancelled = true
+            commandFence.cancel(reason)
             control.stop()
             main.removeCallbacks(heartbeat)
-            val zeroQueued = manual.stop(reason, allowZero = !radioDead && !reason.startsWith("link_lost") && reason != "disconnected")
+            val zeroQueued = manual.stop(reason, allowZero = !radioDead && opened && reason != "disconnected")
             event("safe_stop", "Parada $reason; solicitud 0 % a API=$zeroQueued. Aplicación y resistencia segura SIN confirmar.")
             if (zeroQueued) {
                 status = "stopping_zero_unconfirmed"; publish()
@@ -682,6 +746,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 try { csv?.close() } catch (error: Exception) { csvFailure(error) }
                 csv = null
             }
+            identificationTiming.finish()
+            manual.completeStop(clean)
             status = if (!clean) "cleanup_failed" else reason
             stage = "finished"; finished = true
             main.removeCallbacks(publishLater)

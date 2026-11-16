@@ -149,12 +149,12 @@ void main() {
       );
       expect(calls, isEmpty);
       await tester.scrollUntilVisible(
-        find.byType(DropdownButtonFormField<String>),
+        find.byKey(const ValueKey('trainerSelector')),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(DropdownButtonFormField<String>));
+      await tester.tap(find.byKey(const ValueKey('trainerSelector')));
       await tester.pumpAndSettle();
       await tester.tap(find.text('123:112:6').last);
       await tester.pumpAndSettle();
@@ -499,7 +499,10 @@ void main() {
         false,
       );
       expect(find.textContaining('Condiciones cumplidas'), findsOneWidget);
-      expect(find.textContaining('Diagnóstico de control v2'), findsOneWidget);
+      expect(
+        find.textContaining('Diagnóstico de control · Kotlin:'),
+        findsOneWidget,
+      );
       expect(calls.map((call) => call.method), ['stop', 'start']);
       push({
         ...connected,

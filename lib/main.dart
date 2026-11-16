@@ -12,6 +12,7 @@ import 'ant_trainer_search.dart';
 import 'training.dart';
 import 'app_home.dart';
 import 'trainer_session.dart';
+import 'experimental_slopes.dart';
 
 void main() => runApp(const OpenBkoolApp());
 
@@ -520,6 +521,18 @@ class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
                   searchController: _antTrainerSearch,
                   onExport: _export,
                 ),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.science_outlined),
+            title: const Text('Pendientes experimentales'),
+            subtitle: const Text(
+              'Diagnóstico por nivel · +2 % y +3 % bloqueados',
+            ),
+            onTap: () => Navigator.of(context).push<void>(
+              MaterialPageRoute(
+                builder: (_) => ExperimentalSlopesPage(controller: _training),
               ),
             ),
           ),

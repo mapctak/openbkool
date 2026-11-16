@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'ant_trainer_search.dart';
 import 'trainer_session.dart';
 import 'training.dart';
+import 'spinning.dart';
+import 'manual_ride.dart';
 
 const emerald = Color(0xFF008F70);
 typedef AdvancedBuilder = Widget Function(
@@ -266,6 +268,54 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                       ),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: session.loading ? null : openTraining,
+                    ),
+                  ),
+                  Card(
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(20),
+                      leading: const Icon(Icons.tune, color: emerald, size: 32),
+                      title: const Text('Control manual 1.3'),
+                      subtitle: const Text(
+                        '−5 % a +15 % · preparado, uso físico bloqueado',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: session.loading
+                          ? null
+                          : () => Navigator.of(context).push<void>(
+                              MaterialPageRoute(
+                                builder: (_) => ManualRidePage(
+                                  controller: session.training,
+                                  device: session.selected.toJson(),
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+                  Card(
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(20),
+                      leading: const Icon(
+                        Icons.timer_outlined,
+                        color: emerald,
+                        size: 32,
+                      ),
+                      title: const Text(
+                        'Sesiones de spinning',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 20,
+                        ),
+                      ),
+                      subtitle: const Text(
+                        'Guías de 15–30 min · Sin resistencia automática',
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => Navigator.of(context).push<void>(
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              SpinningProgramsPage(session: session),
+                        ),
+                      ),
                     ),
                   ),
                   const Card(

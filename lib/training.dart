@@ -8,6 +8,8 @@ import 'manual_control_status.dart';
 import 'trainer_session.dart';
 import 'workout_summary.dart';
 import 'slope_presentation.dart';
+import 'identification_progress.dart';
+import 'transmission_diagnostics.dart';
 
 class TrainingPage extends StatefulWidget {
   const TrainingPage({
@@ -31,7 +33,10 @@ class TrainingPage extends StatefulWidget {
   State<TrainingPage> createState() => _TrainingPageState();
 }
 
-class _TrainingPageState extends State<TrainingPage> {
+class _TrainingPageState extends State<TrainingPage>
+    with WidgetsBindingObserver {
+  bool _backgroundStopRequested = false;
+  String _controlMode = 'trial_30s';
   Map<String, Object?> selected = const {
     'protocol': 'BKOOL_V1_PUBLIC',
     'deviceNumber': 30064,
@@ -41,9 +46,31 @@ class _TrainingPageState extends State<TrainingPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (widget.initialDevice != null) {
       selected = Map<String, Object?>.from(widget.initialDevice!);
     }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _backgroundStopRequested =
+          false; // Never reconnect, arm or replay on resume.
+    } else if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.detached) &&
+        widget.stopOnExit &&
+        widget.controller.running &&
+        !_backgroundStopRequested) {
+      _backgroundStopRequested = true;
+      widget.controller.stop(reason: 'app_background');
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   SlopeUiIntent? _slopeIntent;
@@ -109,9 +136,11 @@ class _TrainingPageState extends State<TrainingPage> {
           c.running &&
           manual['eligible'] != false &&
           !c.manualStopping &&
+          !c.controlTransportUncertain &&
           !c.commandBusy &&
-          remainingMs != null &&
-          remainingMs > 0;
+          ((manual['mode'] == 'continuous_experimental' &&
+                  manual['continuousControlEnabled'] == true) ||
+              (remainingMs != null && remainingMs > 0));
       String number(String key, int decimals) =>
           t[key] is num ? (t[key] as num).toStringAsFixed(decimals) : '—';
       final signal = switch (t['signal']) {
@@ -124,7 +153,7 @@ class _TrainingPageState extends State<TrainingPage> {
         canPop: !widget.stopOnExit || (!c.running && !c.commandBusy),
         onPopInvokedWithResult: (didPop, _) async {
           if (didPop) return;
-          await c.stop();
+          await c.stop(reason: 'screen_closed');
           if (context.mounted && !c.running) Navigator.of(context).pop();
         },
         child: Scaffold(
@@ -145,7 +174,7 @@ class _TrainingPageState extends State<TrainingPage> {
                             onPressed: canRequest
                                 ? () => _requestSlope(0, sessionId)
                                 : null,
-                            child: const Text('Solicitar 0 %'),
+                            child: const Text('LLANO 0 %'),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -241,6 +270,7 @@ class _TrainingPageState extends State<TrainingPage> {
                           },
                   ),
                 DropdownButtonFormField<String>(
+                  key: const ValueKey('trainerSelector'),
                   initialValue: keyOf(selected),
                   decoration: const InputDecoration(
                     labelText:
@@ -285,6 +315,33 @@ class _TrainingPageState extends State<TrainingPage> {
               const Text(
                 'Prueba limitada a 30 s y a 0–1 %. La recepción de telemetría permanece activa.',
               ),
+              DropdownButtonFormField<String>(
+                key: const ValueKey('controlMode'),
+                isExpanded: true,
+                initialValue: _controlMode,
+                decoration: const InputDecoration(labelText: 'Modo de control'),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'trial_30s',
+                    child: Text('Prueba · 30 segundos · máximo +1 %'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'continuous_experimental',
+                    enabled: false,
+                    child: Text('Continuo experimental · bloqueado'),
+                  ),
+                ],
+                onChanged: enabled || c.commandBusy
+                    ? null
+                    : (value) {
+                        if (value == 'trial_30s') {
+                          setState(() => _controlMode = value!);
+                        }
+                      },
+              ),
+              const Text(
+                'Modo continuo preparado, bloqueado para uso físico: falta validar la parada con pérdida de enlace y el búfer ANT. No se activa automáticamente.',
+              ),
               CheckboxListTile(
                 title: const Text('Habilitar prueba de resistencia'),
                 value: enabled,
@@ -320,6 +377,7 @@ class _TrainingPageState extends State<TrainingPage> {
                           await c.manualAction(
                             'enableManualTest',
                             confirmed: true,
+                            controlMode: _controlMode,
                             expectedSessionId: sessionId,
                           );
                         }
@@ -332,9 +390,11 @@ class _TrainingPageState extends State<TrainingPage> {
                     : '${activation.canChange ? 'Estado' : 'Activación bloqueada'} [${activation.code}]: ${activation.message}',
                 key: const ValueKey('manualActivationReason'),
               ),
+              IdentificationProgress(report: r),
+              TransmissionDiagnostics(report: r),
               if (!widget.simple)
                 Text(
-                  'Diagnóstico de control v2 · Kotlin: ${r['controlDiagnosticsVersion'] ?? 'pendiente'}',
+                  'Diagnóstico de control · Kotlin: ${r['controlDiagnosticsVersion'] ?? 'pendiente'}',
                 ),
               if (!widget.simple)
                 ExpansionTile(
@@ -357,7 +417,13 @@ class _TrainingPageState extends State<TrainingPage> {
                     ),
                   ],
                 ),
-              if (enabled) Text('Tiempo restante: $remaining s'),
+              if (enabled && remainingMs != null)
+                Text('Tiempo restante: $remaining s'),
+              if (manual['elapsedControlMs'] is num)
+                Text(
+                  'Tiempo de control: ${((manual['elapsedControlMs'] as num) / 1000).floor()} s',
+                  key: const ValueKey('controlElapsed'),
+                ),
               if (!widget.simple)
                 ManualOrderSummary(report: r, intent: _slopeIntent),
               Wrap(
@@ -381,22 +447,24 @@ class _TrainingPageState extends State<TrainingPage> {
                         : null,
                     child: const Text('−'),
                   ),
-                  OutlinedButton(
-                    onPressed: canRequest
-                        ? () => _requestSlope(0, sessionId)
-                        : null,
-                    style: widget.simple
-                        ? OutlinedButton.styleFrom(
-                            minimumSize: const Size(80, 64),
-                            textStyle: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                          )
-                        : null,
-                    child: const Text('LLANO 0 %'),
-                  ),
+                  if (!(c.running &&
+                      (enabled || manual['everEnabled'] == true)))
+                    OutlinedButton(
+                      onPressed: canRequest
+                          ? () => _requestSlope(0, sessionId)
+                          : null,
+                      style: widget.simple
+                          ? OutlinedButton.styleFrom(
+                              minimumSize: const Size(80, 64),
+                              textStyle: Theme.of(context).textTheme.titleLarge
+                                  ?.copyWith(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                            )
+                          : null,
+                      child: const Text('LLANO 0 %'),
+                    ),
                   OutlinedButton(
                     onPressed: canRequest && stepBasePercent < 1
                         ? () => _requestSlope(stepBasePercent + 0.5, sessionId)

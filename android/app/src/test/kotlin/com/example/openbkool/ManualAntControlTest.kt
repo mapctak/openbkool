@@ -169,7 +169,7 @@ class ManualAntControlTest {
     @Test fun futureEncodingDoesNotAuthorizeTwoPercent() {
         assertEquals("33 FF FF FF FF E8 4E FF", hex(encodeSlopeCandidate(2.0)))
         val r = Rig(); r.c.enable(true)
-        assertEquals("invalid_slope", r.c.request(2.0)["reason"])
+        assertEquals("experimental_level_not_authorized", r.c.request(2.0)["reason"])
         assertTrue(r.frames.isEmpty())
         assertEquals(30000L, r.c.snapshot()["maxDurationMs"])
         assertEquals(1.0, r.c.snapshot()["operationalMaxPercent"])
@@ -199,6 +199,70 @@ class ManualAntControlTest {
         assertEquals(false, (state["lastManualApiSuccess"] as Map<*,*>)["stopRequest"])
         assertEquals(true, (state["lastStopCommand"] as Map<*,*>)["stopRequest"])
         assertEquals(listOf(0.5,1.0,0.5,0.0,0.0), r.events.filter { it["event"] == "api_returned" }.map { it["requestedPercent"] })
+    }
+
+    @Test fun explicitStatesAndTerminalRecoveryAreLogged() {
+        val r = Rig(); r.link = r.link.copy(channelOpen = false)
+        assertEquals("inactive", r.c.snapshot()["state"])
+        r.link = r.link.copy(channelOpen = true)
+        assertEquals("available", r.c.snapshot()["state"])
+        r.c.enable(true); assertEquals("active", r.c.snapshot()["state"])
+        r.c.request(0.5)
+        r.link = r.link.copy(signalAgeMs = 3000); r.c.supervise()
+        assertEquals("error", r.c.snapshot()["state"])
+        r.link = r.link.copy(signalAgeMs = 0); r.time = 1000
+        r.c.request(1.0); assertEquals(1, r.frames.size)
+        assertFalse(r.c.stop("link_lost:signal_not_fresh", false))
+        assertEquals("stopping", r.c.snapshot()["state"])
+        r.c.completeStop(true); assertEquals("error", r.c.snapshot()["state"])
+        assertEquals("link_lost:signal_not_fresh", r.c.snapshot()["stopReason"])
+        assertEquals(listOf("available", "active", "error", "stopping", "error"),
+            r.events.filter { it["event"] == "control_state" }.map { it["to"] })
+        r.c.enable(true); r.c.request(1.0); assertEquals(1, r.frames.size)
+    }
+    @Test fun longConnectedSessionDoesNotArmOrExtendThirtySecondLimit() {
+        val r = Rig()
+        for (second in 0L..21600L step 60) {
+            r.time = second * 1000; assertEquals("available", r.c.snapshot()["state"])
+        }
+        assertTrue(r.frames.isEmpty())
+        val start = r.time; r.c.enable(true)
+        for (second in 0L..29L) {
+            r.time = start + second * 1000
+            r.c.request(if (second % 2L == 0L) 0.5 else 1.0)
+            assertEquals("active", r.c.snapshot()["state"])
+        }
+        r.time = start + 30000; assertEquals("test_timeout", r.c.abortReason())
+        r.c.request(0.5); assertEquals(30, r.frames.size)
+        assertTrue(r.c.stop("test_timeout", true)); r.c.completeStop(true)
+        assertEquals("stopped", r.c.snapshot()["state"])
+        r.time += 86400000; r.c.enable(true); r.c.request(1.0)
+        assertEquals(31, r.frames.size)
+        assertEquals("test_timeout", r.c.snapshot()["stopReason"])
+    }
+    @Test fun lifecycleAndRadioFailuresKeepStopReasonsAndNeverResume() {
+        for (reason in listOf("screen_closed", "app_background", "engine_disposed", "manual_stop", "disconnected")) {
+            val r = Rig(); r.c.enable(true); r.c.request(1.0)
+            if (reason == "disconnected") r.link = r.link.copy(radioAvailable = false)
+            r.c.stop(reason, reason != "disconnected"); r.c.completeStop(true)
+            assertEquals(reason, r.c.snapshot()["stopReason"])
+            assertEquals(if (reason == "disconnected") "error" else "stopped", r.c.snapshot()["state"])
+            val count = r.frames.size
+            r.link = r.link.copy(radioAvailable = true); r.time += 1000
+            r.c.enable(true); r.c.request(0.5); assertEquals(count, r.frames.size)
+        }
+    }
+    @Test fun obsoleteTelemetryClosedChannelAndCleanupErrorAreExplicit() {
+        for (bad in listOf(ManualControlLink(true,true,67,22,0,false),
+            ManualControlLink(true,true,67,22,0,true,channelOpen=false))) {
+            val r = Rig(); r.c.enable(true); r.link = bad
+            r.c.supervise(); assertEquals("error", r.c.snapshot()["state"])
+            r.c.request(1.0); assertTrue(r.frames.isEmpty())
+        }
+        val r = Rig(); r.c.enable(true); r.failure = IllegalStateException("API down")
+        r.c.request(0.5); assertEquals("error", r.c.snapshot()["state"])
+        r.c.stop("manual_api_error", false); r.c.completeStop(false)
+        assertEquals("error", r.c.snapshot()["state"])
     }
 
 }

@@ -19,6 +19,8 @@ class AntTrainerSearchController extends ChangeNotifier {
   bool manualStopping = false;
   Map<String, Object?> snapshot = {'status': 'not_started', 'running': false};
   bool get running => snapshot['running'] == true;
+  bool get controlTransportUncertain =>
+      snapshot['controlTransportUncertain'] == true;
 
   void _notify() {
     if (!_disposed) notifyListeners();
@@ -37,7 +39,14 @@ class AntTrainerSearchController extends ChangeNotifier {
         sequence < currentSequence) {
       return;
     }
-    snapshot = incoming;
+    final sameSession =
+        incoming['sessionId'] != null &&
+        incoming['sessionId'] == snapshot['sessionId'];
+    snapshot = {
+      ...incoming,
+      if (sameSession && controlTransportUncertain)
+        'controlTransportUncertain': true,
+    };
     if (_ready != null && !_ready!.isCompleted) _ready!.complete();
     _notify();
   }
@@ -49,7 +58,11 @@ class AntTrainerSearchController extends ChangeNotifier {
         _update,
         onError: (Object error) {
           if (!_ready!.isCompleted) _ready!.completeError(error);
-          snapshot = {...snapshot, 'clientError': error.toString()};
+          snapshot = {
+            ...snapshot,
+            'clientError': error.toString(),
+            'controlTransportUncertain': true,
+          };
           _notify();
           if (running) unawaited(stop());
         },
@@ -75,6 +88,10 @@ class AntTrainerSearchController extends ChangeNotifier {
         if (mode == 'training' || mode == 'training_connected') ...{
           'sessionId': null,
           'reportSequence': null,
+          'identificationTiming': null,
+          'transmissionDiagnostics': null,
+          'manualSessionPolicy': null,
+          'controlTransportUncertain': false,
           'manualControl': <String, Object?>{
             'enabled': false,
             'eligible': false,
@@ -121,13 +138,13 @@ class AntTrainerSearchController extends ChangeNotifier {
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop({String reason = 'user_finish'}) async {
     _manualGeneration++;
     commandBusy = true;
     _notify();
     try {
       final report = await channel
-          .invokeMapMethod<String, dynamic>('stop')
+          .invokeMapMethod<String, dynamic>('stop', {'reason': reason})
           .timeout(const Duration(seconds: 20));
       if (report != null) _update(report);
     } catch (error) {
@@ -135,6 +152,7 @@ class AntTrainerSearchController extends ChangeNotifier {
       snapshot = {
         ...snapshot,
         'clientError': 'No se pudo confirmar el cierre: $error',
+        'controlTransportUncertain': true,
         'resourcesReleased': null,
       };
     } finally {
@@ -147,9 +165,12 @@ class AntTrainerSearchController extends ChangeNotifier {
     String method, {
     double? percent,
     bool confirmed = false,
+    String controlMode = 'trial_30s',
+    bool experimentalConfirmed = false,
     String? expectedSessionId,
   }) async {
     final stopping = method == 'stopManualTest';
+    if (!stopping && controlTransportUncertain) return;
     if (stopping && manualStopping) return;
     if (commandBusy && !stopping) return;
     if (stopping) {
@@ -165,13 +186,20 @@ class AntTrainerSearchController extends ChangeNotifier {
           .invokeMapMethod<String, dynamic>(method, {
             'sessionId': expectedSessionId ?? snapshot['sessionId'],
             'confirmed': confirmed,
+            if (method == 'enableManualTest') 'controlMode': controlMode,
+            if (method == 'enableManualTest')
+              'experimentalConfirmed': experimentalConfirmed,
             'percent': ?percent,
           })
           .timeout(const Duration(seconds: 20));
       if (report != null && generation == _manualGeneration) _update(report);
     } catch (error) {
       if (generation == _manualGeneration) {
-        snapshot = {...snapshot, 'clientError': 'Control manual: $error'};
+        snapshot = {
+          ...snapshot,
+          'clientError': 'Control manual: $error',
+          'controlTransportUncertain': true,
+        };
       }
     } finally {
       if (stopping) manualStopping = false;
@@ -184,7 +212,7 @@ class AntTrainerSearchController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    if (running) unawaited(stop());
+    if (running) unawaited(stop(reason: 'controller_disposed'));
     unawaited(_subscription?.cancel());
     super.dispose();
   }

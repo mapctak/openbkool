@@ -131,4 +131,19 @@ void main() {
       );
     },
   );
+  test('enabled flag cannot hide a latched link loss', () {
+    final blocked = status({
+      ...ready,
+      'manualControl': {
+        'enabled': true,
+        'eligible': false,
+        'remainingMs': 12000,
+        'state': 'error',
+        'unavailableReason': 'link_lost:signal_not_fresh',
+      },
+    });
+    expect(blocked.canChange, false);
+    expect(blocked.code, 'link_lost:signal_not_fresh');
+    expect(blocked.message, contains('No se reactivará'));
+  });
 }

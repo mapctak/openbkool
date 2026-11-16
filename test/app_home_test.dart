@@ -24,7 +24,7 @@ class FakeTraining extends AntTrainerSearchController {
   }
 
   @override
-  Future<void> stop() async {
+  Future<void> stop({String reason = 'user_finish'}) async {
     stops++;
     emit({...snapshot, 'running': false, 'status': 'stopped'});
   }

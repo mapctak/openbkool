@@ -366,3 +366,29 @@ Se conservan 30 segundos y +1 %; +2 % solo se prueba como candidato sin transpor
 [pendiente_ordenada_1_1_3.md](pendiente_ordenada_1_1_3.md) detalla el recorrido
 Flutter/Kotlin, la separación del último éxito manual y la parada, y el bloqueo
 de snapshots atrasados. Conserva rango, temporizador y todas las barreras.
+
+## Actualización 1.1.4: supervisión y ciclo de vida
+
+[control_sesiones_1_1_4.md](control_sesiones_1_1_4.md) describe los estados
+explícitos, el bloqueo persistente al perder enlace, motivos de parada y pruebas
+de segundo plano/recuperación. Continúan 30 s, +1 % y activación por sesión.
+
+## Actualización 1.1.5: espera de fabricante/modelo
+
+[identificacion_ant_1_1_5.md](identificacion_ant_1_1_5.md) documenta la investigación
+de Request Data Page y los hitos medidos por conexión. Soporte de solicitud 0x50
+en Pro1 sin confirmar: recepción pasiva conservada y ninguna transmisión nueva.
+
+## Actualización 1.1.6: infraestructura continua bloqueada
+
+[control_continuo_1_1_6.md](control_continuo_1_1_6.md) contiene la auditoría,
+cancelación de cola, intento de cero con canal identificado aun sin métricas
+recientes y pruebas largas simuladas. Continuo físico bloqueado; trial 30 s
+predeterminado. El búfer radio y resistencia física siguen sin confirmación.
+
+## Actualización 1.1.7: contrato de broadcast y cierre
+
+[auditoria_buffer_ant_1_1_7.md](auditoria_buffer_ant_1_1_7.md) contrasta el
+Javadoc 4.16 con el AAR instalado, corrige la invalidación tardía de cierre,
+registra TX/cierre sin confirmación de pendiente y propone validación en llano.
+Continuo bloqueado, máximo +1 %, trial 30 s y activación expresa conservados.

@@ -39,8 +39,12 @@ class MainActivity : FlutterActivity() {
                 }
                 "enableManualTest", "setManualSlope", "stopManualTest" -> session.manualAction(call.method,
                     call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
-                    call.argument<Number>("percent")?.toDouble(), result)
-                "stop" -> session.stop(result)
+                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true)
+                "stop" -> {
+                    val requested = call.argument<String>("reason")
+                    val reason = requested?.takeIf { it in setOf("screen_closed", "app_background", "controller_disposed", "user_finish") } ?: "stopped"
+                    session.stop(result, reason)
+                }
                 "snapshot" -> result.success(session.snapshot())
                 "exportCsv" -> session.exportCsv(result)
                 else -> result.notImplemented()
@@ -111,8 +115,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onStop() {
-        training?.stop()
-        antTrainerSearch?.stop()
+        training?.stop(reason = "app_background")
+        antTrainerSearch?.stop(reason = "app_background")
         super.onStop()
     }
 

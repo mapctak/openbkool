@@ -148,6 +148,18 @@ class ManualOrderSummary extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Text(
+                'Control: ${switch ((report['manualControl'] as Map?)?['state']) {
+                  'inactive' => 'Inactivo',
+                  'available' => 'Disponible',
+                  'active' => 'Activo',
+                  'stopping' => 'Deteniendo',
+                  'stopped' => 'Detenido',
+                  'error' => 'Error',
+                  _ => 'Esperando estado nativo',
+                }}',
+                key: const ValueKey('manualControlState'),
+              ),
               if (state.trialStatus != null)
                 Text(
                   state.trialStatus!,
@@ -186,6 +198,10 @@ class ManualOrderSummary extends StatelessWidget {
                   'Última solicitud rechazada; no se ha enviado esa orden.',
                 ),
               if (state.stopStatus != null) Text(state.stopStatus!),
+              if ((report['manualControl'] as Map?)?['state'] == 'error')
+                const Text(
+                  'Control bloqueado por error · Resistencia física actual desconocida.',
+                ),
               const Text('Aplicación física no confirmada por el protocolo.'),
               if (state.finished || state.stopping || state.expired)
                 const Text(
