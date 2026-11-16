@@ -4,6 +4,16 @@ package com.example.openbkool
 internal data class BkoolPage(val page: Int, val speedKmh: Double? = null,
     val distanceCounter: Int? = null, val powerW: Int? = null, val cadenceRpm: Int? = null)
 
+/** Pro1 ignores 0x11. Preserve bytes, never call its unverified word an applied grade. */
+internal fun observeBkoolPage11(payload: ByteArray): Map<String, Any?>? {
+    if (payload.size != 8 || (payload[0].toInt() and 255) != 0x11) return null
+    val word = (payload[4].toInt() and 255) or ((payload[5].toInt() and 255) shl 8)
+    return mapOf("page" to 0x11, "payloadHex" to hex(payload), "rawWordAtBytes4And5" to word,
+        "rawBytes4And5Hex" to hex(payload.copyOfRange(4,6)),
+        "interpretation" to "raw_only_semantics_unverified_for_bkool_v1",
+        "commandAcknowledgement" to false, "mechanicalConfirmation" to false)
+}
+
 internal fun decodeBkoolPage(payload: ByteArray): BkoolPage? {
     if (payload.size != 8) return null
     fun u(i: Int) = payload[i].toInt() and 255
@@ -21,7 +31,8 @@ internal fun decodeBkoolPage(payload: ByteArray): BkoolPage? {
     }
 }
 
-internal class BkoolTelemetry(private val startedMs: Long) {
+internal class BkoolTelemetry(private val startedMs: Long,
+    private val target: AntTrainerIdentity = AntTrainerIdentity(30064, 112, 5)) {
     var lastReceivedMs: Long? = null; private set
     private var speedAt: Long? = null
     private var powerAt: Long? = null
@@ -33,9 +44,12 @@ internal class BkoolTelemetry(private val startedMs: Long) {
     private var distance = 0L
     private var partial = false
     private var signalLost = false
-    fun accepts(f: AntReceivedFrame) = f.deviceNumber == 30064 && f.deviceType == 112 && f.transmissionType == 5
+    private var page11: Map<String, Any?>? = null
+    private var page11At: Long? = null
+    fun accepts(f: AntReceivedFrame) = target.matches(f)
     fun receive(frame: AntReceivedFrame, ms: Long): BkoolPage? {
         if (!accepts(frame)) return null
+        observeBkoolPage11(frame.payload)?.let { page11 = it; page11At = ms }
         if (lastReceivedMs?.let { ms - it >= 5000 } == true) loseSignal()
         lastReceivedMs = ms
         signalLost = false
@@ -73,12 +87,14 @@ internal class BkoolTelemetry(private val startedMs: Long) {
         val state = signal(ms)
         val freshSpeed = state == "receiving" && speedAt?.let { ms - it < 10000 } == true
         val freshPower = state == "receiving" && powerAt?.let { ms - it < 10000 } == true
-        return mapOf("signal" to state, "speedKmh" to speed.takeIf { freshSpeed },
+        return mapOf("page11Observation" to page11?.plus(mapOf("receivedAtMs" to page11At,
+                "ageMs" to (ms - page11At!!), "stale" to (ms - page11At!! >= 5000))),
+            "signal" to state, "speedKmh" to speed.takeIf { freshSpeed },
             "powerW" to power.takeIf { freshPower }, "cadenceRpm" to cadence.takeIf { freshPower },
             "distanceM" to distance, "distancePartial" to partial,
             "speedAgeMs" to speedAt?.let { ms - it }, "powerAgeMs" to powerAt?.let { ms - it },
             "signalAgeMs" to lastReceivedMs?.let { ms - it }, "elapsedMs" to ms - startedMs,
-            "deviceNumber" to 30064, "deviceType" to 112, "transmissionType" to 5,
+            "deviceNumber" to target.number, "deviceType" to target.type, "transmissionType" to target.transmission,
             "protocol" to "BKOOL_V1_PUBLIC")
     }
 }

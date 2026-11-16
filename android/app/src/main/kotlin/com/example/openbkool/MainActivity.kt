@@ -17,6 +17,9 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        val preferences = TrainerPreferences(this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/preferences")
+            .setMethodCallHandler(preferences::handle)
         antDiagnostics = AntDiagnostics(this)
         antTrainerSearch = AntTrainerSearch(this)
         training = AntTrainerSearch(this, training = true) { running ->
@@ -28,8 +31,20 @@ class MainActivity : FlutterActivity() {
             val session = training
             if (session == null) result.error("not_ready", "Entrenamiento no inicializado", null)
             else when (call.method) {
-                "start" -> session.start("training", result)
-                "stop" -> session.stop(result)
+                "start" -> session.start(call.argument<String>("mode") ?: "training", result, call.argument<Map<String, Any?>>("device"))
+                "prepareSlope" -> {
+                    val percent = call.argument<Number>("percent")
+                    if (percent == null) result.error("invalid_grade", "Pendiente numérica requerida", null)
+                    else session.prepareSlope(percent.toDouble(), result)
+                }
+                "enableManualTest", "setManualSlope", "stopManualTest" -> session.manualAction(call.method,
+                    call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
+                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true, call.argument<String>("rangeProfile"))
+                "stop" -> {
+                    val requested = call.argument<String>("reason")
+                    val reason = requested?.takeIf { it in setOf("screen_closed", "app_background", "controller_disposed", "user_finish") } ?: "stopped"
+                    session.stop(result, reason)
+                }
                 "snapshot" -> result.success(session.snapshot())
                 "exportCsv" -> session.exportCsv(result)
                 else -> result.notImplemented()
@@ -100,8 +115,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onStop() {
-        training?.stop()
-        antTrainerSearch?.stop()
+        training?.stop(reason = "app_background")
+        antTrainerSearch?.stop(reason = "app_background")
         super.onStop()
     }
 

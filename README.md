@@ -1,7 +1,15 @@
 # OpenBkool
 
-Diagnóstico BLE de un Bkool Smart Pro antiguo con Flutter y
-`flutter_blue_plus 2.3.14`.
+Entrenamiento libre con un Bkool Smart Pro v1 mediante ANT propietario,
+con Flutter y Kotlin. Inicio permite conectar directamente al rodillo recordado;
+Entrenamiento libre muestra potencia, cadencia, velocidad, distancia y tiempo.
+El control manual sigue siendo una prueba opcional de 0–1 %, habilitada
+expresamente por sesión y limitada a 30 segundos.
+
+Las herramientas BLE (`flutter_blue_plus 2.3.14`), ANT, registros y exportaciones
+siguen en **Ajustes → Diagnósticos avanzados**.
+
+[Interfaz OpenBkool 1.1, arquitectura y validación](docs/interfaz_openbkool_1_1.md).
 
 Busca durante 30 segundos sin filtros y muestra todos los dispositivos, con o sin
 nombre, sus identificadores, RSSI y UUID anunciados. Destaca pistas `bkool` y
@@ -41,7 +49,12 @@ No envía páginas de control. Bkool V2 sigue desactivado.
 
 «Entrenamiento» recibe telemetría del Smart Pro v1 confirmado (ANT público,
 ID 30064/112/5): velocidad, potencia, cadencia y distancia, con detección de
-pérdida de señal. Al finalizar permite copiar el registro CSV. No transmite
-comandos de control. [Formatos, capturas, pruebas y limitaciones](docs/telemetria_ant.md).
+pérdida de señal. Al finalizar permite copiar el registro CSV. El control real requiere habilitación y confirmación explícitas por sesión. [Formatos, capturas, pruebas y limitaciones](docs/telemetria_ant.md).
 
 - [Icono original SVG, generación Android y comprobaciones](docs/icono_openbkool.md).
+
+- [Preparación bidireccional ANT V1, sin comandos, y plan de primera prueba](docs/control_ant_preparacion.md).
+
+- [Primera prueba manual de pendiente ANT: activación, límites, parada y JSON](docs/control_manual_ant.md).
+
+- [Pendiente solicitada, envío a ANT y parada: corrección visual 1.1.1](docs/pendiente_interfaz_1_1_1.md).

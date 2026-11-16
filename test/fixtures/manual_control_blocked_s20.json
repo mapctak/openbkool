@@ -1,0 +1,39 @@
+{
+  "sessionId": "672189c2-e4e3-4d8c-9dbb-f426c492355b",
+  "manualControl": {
+    "enabled": false,
+    "everEnabled": false,
+    "stopped": false,
+    "faulted": false,
+    "eligible": false,
+    "unavailableReason": "dedicated_identity_required",
+    "remainingMs": null,
+    "maxDurationMs": 30000,
+    "attempts": 0,
+    "pendingCommands": 0
+  },
+  "channelMode": "background_receive_only",
+  "connectionState": "identity_verified",
+  "telemetry": {
+    "signal": "receiving",
+    "speedKmh": 14.7492,
+    "powerW": 24,
+    "cadenceRpm": 37,
+    "speedAgeMs": 952,
+    "powerAgeMs": 202,
+    "signalAgeMs": 202
+  },
+  "status": "running",
+  "running": true,
+  "mode": "training",
+  "updatedAt": "2026-11-13T18:22:25.393Z",
+  "devices": [{
+    "deviceType": 112,
+    "deviceNumber": 30064,
+    "transmissionType": 5,
+    "protocol": "BKOOL_V1_PUBLIC",
+    "productPage": 81,
+    "mainSoftwareRevision": 3,
+    "supplementalSoftwareRevision": 6
+  }]
+}
