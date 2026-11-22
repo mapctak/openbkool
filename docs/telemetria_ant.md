@@ -98,8 +98,9 @@ reserva de diagnóstico ANT. No se activa FE-C ni la red privada V2 en entrenami
 - Desconexión y liberación: 15 s desde la última página.
 - Velocidad o potencia/cadencia con 10 s de antigüedad: cifra ausente, aunque
   sigan llegando páginas informativas. La potencia y la velocidad tienen edades separadas.
-- Finalizar, volver atrás o pasar la aplicación a segundo plano cierran recursos.
-  El entrenamiento funciona en primer plano. Bloquear el teléfono termina la sesión.
+- Finalizar o salir del entrenamiento cierran recursos. Desde 1.6, el servicio Android supervisa
+  el enlace cuando se apaga la pantalla o la actividad deja de estar visible.
+  [Ciclo de vida y validación](entrenamiento_segundo_plano_1_6.md).
 - Los fallos de permisos/servicio/configuración/canal y operaciones de limpieza
   se mantienen en los eventos y en `antTraining` del diagnóstico JSON general.
   Si falla la limpieza, no se afirma liberación y se bloquean nuevas reservas

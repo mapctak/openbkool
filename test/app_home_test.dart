@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus_platform_interface/flutter_blue_plus_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openbkool/app_home.dart';
@@ -43,6 +44,55 @@ void main() {
   tearDown(
     () => messenger.setMockMethodCallHandler(TrainerPreferences.channel, null),
   );
+  testWidgets(
+    'a new Flutter activity reattaches to the service workout without starting or authorizing',
+    (tester) async {
+      const events = MethodChannel('openbkool/training/events');
+      const commands = MethodChannel('openbkool/training');
+      final calls = <MethodCall>[];
+      messenger.setMockMethodCallHandler(commands, (call) async {
+        calls.add(call);
+        return null;
+      });
+      messenger.setMockMethodCallHandler(events, (call) async {
+        if (call.method == 'listen') {
+          await messenger.handlePlatformMessage(
+            events.name,
+            const StandardMethodCodec().encodeSuccessEnvelope({
+              'sessionId': 'owned-by-service',
+              'running': true,
+              'trainingServiceActive': true,
+              'selectedDevice': SavedTrainer.known.device,
+              'connectionState': 'identity_verified',
+              'telemetry': {'signal': 'receiving'},
+              'manualControl': {'enabled': true, 'eligible': true},
+            }),
+            (_) {},
+          );
+        }
+        return null;
+      });
+      addTearDown(() {
+        messenger.setMockMethodCallHandler(events, null);
+        messenger.setMockMethodCallHandler(commands, null);
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OpenBkoolShell(advancedBuilder: (_, _) => const SizedBox()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Servicio Android activo'), findsOneWidget);
+      expect(find.text('Autorizar rango completo'), findsNothing);
+      expect(find.text('DETENER ENTRENAMIENTO'), findsOneWidget);
+      expect(calls, isEmpty);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
+  );
+
   testWidgets(
     'home offers only free training and connects using the remembered identity',
     (tester) async {

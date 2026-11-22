@@ -9,7 +9,7 @@ import 'package:openbkool/training.dart';
 
 void main() {
   testWidgets(
-    'the full selector requires consent, reports background stop and exports',
+    'the same authorized session survives pause and resume, then exports after native stop',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1000, 1800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -22,6 +22,8 @@ void main() {
       final copied = <String>[];
       final initial = <String, Object?>{
         'running': true,
+        'trainingServiceActive': true,
+        'backgroundPolicy': 'foreground_service',
         'sessionId': 'session',
         'selectedDevice': SavedTrainer.known.device,
         'connectionState': 'identity_verified',
@@ -41,7 +43,7 @@ void main() {
       messenger.setMockMethodCallHandler(c.channel, (call) async {
         calls.add(call);
         if (call.method == 'exportCsv') {
-          return 'event,session_id\nfinished:app_background,session\n';
+          return 'event,session_id\nfinished:user_finish,session\n';
         }
         if (call.method == 'exportJson') {
           final finalized = (call.arguments as Map)['final'] == true;
@@ -96,41 +98,55 @@ void main() {
       expect(jsonDecode(copied.single)['recordState'], 'partial');
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump();
-      expect(calls, hasLength(2)); // Android owns the background decision.
+      expect(calls, hasLength(2));
+      await publish({
+        ...initial,
+        'manualControl': {'enabled': true, 'eligible': true},
+        'events': [
+          {
+            'event': 'android_lifecycle',
+            'details': {'decision': 'continue_training'},
+          },
+        ],
+      });
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(c.running, isTrue);
+      expect(c.snapshot['sessionId'], 'session');
+      expect(calls, hasLength(2));
+      expect(find.textContaining('Servicio Android activo'), findsOneWidget);
       nativeReport = {
         ...initial,
         'running': false,
-        'status': 'app_background',
+        'trainingServiceActive': false,
+        'status': 'user_finish',
         'csvFile': 'training.csv',
         'manualControlEvents': [
-          {'event': 'stop_requested', 'reason': 'app_background'},
+          {'event': 'stop_requested', 'reason': 'user_finish'},
         ],
         'events': [
           {
             'event': 'android_lifecycle',
-            'details': {'decision': 'app_background'},
+            'details': {'decision': 'user_finish'},
           },
         ],
         'manualControl': {
           'state': 'stopped',
           'stopped': true,
-          'stopReason': 'app_background',
+          'stopReason': 'user_finish',
         },
       };
       await publish(nativeReport);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
       expect(tester.widget<DropdownButton<double>>(selector).onChanged, isNull);
-      expect(
-        find.text('Motivo de parada · app en segundo plano'),
-        findsOneWidget,
-      );
-      expect(find.textContaining('Bloquear la pantalla'), findsOneWidget);
+      expect(find.text('Motivo de parada · user_finish'), findsOneWidget);
+      expect(find.textContaining('Servicio Android activo'), findsNothing);
       await tester.tap(find.text('Copiar CSV'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar JSON'));
       await tester.pumpAndSettle();
-      expect(copied[1], contains('finished:app_background,session'));
+      expect(copied[1], contains('finished:user_finish,session'));
       expect(jsonDecode(copied.last)['sessionId'], 'session');
       expect(jsonDecode(copied.last)['recordState'], 'final');
       expect(
@@ -142,7 +158,7 @@ void main() {
       expect(calls[3].arguments, {'sessionId': 'session', 'final': true});
       expect(
         jsonDecode(copied.last)['events'].single['details']['decision'],
-        'app_background',
+        'user_finish',
       );
       expect(calls.map((call) => call.method), [
         'authorizeControl',

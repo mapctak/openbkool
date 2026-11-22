@@ -1,5 +1,7 @@
 # Entrenamiento libre en OpenBkool 1.5
 
+> Desde 1.6 cambia el [ciclo de vida Android](entrenamiento_segundo_plano_1_6.md).
+
 Inicio ofrece **ENTRENAMIENTO LIBRE** y la selección del rodillo. En el
 entrenamiento se conecta por ANT, se revisa la telemetría y se autoriza el
 rango de −5 % a +15 % en pasos de 0,5 %. La conexión y la autorización

@@ -155,9 +155,14 @@ class _TrainingPageState extends State<TrainingPage> {
           body: ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              const Text(
-                'Entrena con OpenBkool visible. Bloquear la pantalla o cambiar de app detiene la sesión.',
-              ),
+              if (report['trainingServiceActive'] == true)
+                const Text(
+                  'Servicio Android activo · DETENER también está en la notificación',
+                )
+              else if (!c.running)
+                const Text(
+                  'La sesión se inicia al verificar el servicio y su notificación.',
+                ),
               if (!c.running)
                 FilledButton(
                   onPressed: widget.session.loading || widget.session.locked

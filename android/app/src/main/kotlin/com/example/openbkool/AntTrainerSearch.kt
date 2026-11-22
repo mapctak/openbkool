@@ -37,7 +37,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.RejectedExecutionException
 
 /** Diagnóstico RX y entrenamiento V1; control manual solo tras activación explícita por sesión. */
-class AntTrainerSearch(context: Context, private val training: Boolean = false) : EventChannel.StreamHandler {
+class AntTrainerSearch(context: Context, private val training: Boolean = false, private val trainingOwner: TrainingService? = null) : EventChannel.StreamHandler {
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private var sink: EventChannel.EventSink? = null
@@ -55,8 +55,18 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
         if (!training) stop(reason = "event_stream_closed")
     }
     fun snapshot(): Map<String, Any?> = latest
+    internal fun hasActiveSession() = active != null
+    internal fun logLifecycle(entry: Map<String, Any?>) {
+        val session = active ?: return
+        session.submit { session.recordLifecycle(entry) }
+    }
+    internal fun screenChanged(off: Boolean) {
+        val session = active ?: return
+        session.submit { session.screenChanged(off) }
+    }
 
-    fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null) {
+    fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null,
+        lifecycle: List<Map<String, Any?>> = emptyList(), screenOff: Boolean = false) {
         if (mode !in (if (training) listOf("training_connected") else listOf("sequential", "fec", "bkool_v1"))) {
             result.error("invalid_mode", "Protocolo no implementado", null); return
         }
@@ -81,7 +91,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             result.error("ant_busy", "Otra operación ANT está usando la radio", null); return
         }
         active = session
-        session.submit { session.begin() }
+        session.submit { session.begin(lifecycle, screenOff) }
         result.success(mapOf("accepted" to true))
     }
 
@@ -176,7 +186,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
         private var finalClose: Runnable? = null
         private val manual: ManualAntControl by lazy { ManualAntControl(target, android.os.SystemClock::elapsedRealtime,
             ::manualLink, { payload, zero ->
-                if (!zero && cancelled) throw ManualCommandCancelledException()
+                if (!zero && (cancelled || trainingOwner?.failure() != null)) throw ManualCommandCancelledException()
                 check(!finished && !radioDead && transmissionAudit.channelUsable &&
                     (if (zero) manualLink().stopReason(target) else manualLink().reason(target)) == null) { "Canal o señal no disponibles" }
                 val selectedChannel = checkNotNull(channel) { "Canal cerrado" }
@@ -215,6 +225,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
         private var nextSupervisionAt = 0L
         private val trainingTick = Runnable { submit {
             if (finished || cancelled || !opened) return@submit
+            trainingOwner?.failure()?.let { stopForServiceFailure(it); return@submit }
             manual.supervise()
             if (handleControlAbort()) return@submit
             val now = android.os.SystemClock.elapsedRealtime()
@@ -225,6 +236,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             } else {
                 manual.flushPending()
             }
+            trainingOwner?.failure()?.let { stopForServiceFailure(it); return@submit }
             if (manual.snapshot()["faulted"] == true) { finish("manual_api_error"); return@submit }
             if (superviseLink) {
                 val signal = telemetry!!.signal(android.os.SystemClock.elapsedRealtime())
@@ -265,6 +277,20 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             csvError = error.toString()
             runCatching { csv?.close() }; csv = null
             event("csv_error", "Registro CSV interrumpido: $error")
+        }
+        private var isScreenOff = false
+        private var screenOffFrames = 0L
+        fun screenChanged(off: Boolean) {
+            if (finished || off == isScreenOff) return
+            if (off) screenOffFrames = 0
+            isScreenOff = off
+            recordLifecycle(mapOf("event" to if (off) "screen_off" else "screen_on",
+                "decision" to "continue_training", "antFramesWhileOff" to screenOffFrames,
+                "monotonicMs" to android.os.SystemClock.elapsedRealtime()))
+        }
+        private fun stopForServiceFailure(reason: String, result: MethodChannel.Result? = null) {
+            recordLifecycle(mapOf("event" to "training_service_lost", "decision" to "stop", "reason" to reason))
+            end(reason, result)
         }
         fun recordLifecycle(entry: Map<String, Any?>) {
             event("android_lifecycle", entry["event"].toString(), details = entry)
@@ -332,6 +358,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             if (finished || stopping || cancelled) {
                 result.error("session_stopping", "La sesión está cerrándose", null); return
             }
+            trainingOwner?.failure()?.let { stopForServiceFailure(it, result); return }
             when (method) {
                 "authorizeControl" -> manual.enable(explicit)
                 "setManualSlope" -> {
@@ -342,11 +369,12 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                     scheduleTrainingTick()
                 }
             }
+            trainingOwner?.failure()?.let { stopForServiceFailure(it, result); return }
             if (handleControlAbort(result)) return
             if (manual.snapshot()["faulted"] == true) { end("manual_api_error", result); return }
             publish(); result.success(latest)
         }
-        fun begin() {
+        fun begin(lifecycle: List<Map<String, Any?>>, screenOff: Boolean) {
             event("search_start", "Búsqueda $mode. Solo recepción e información; Bkool V2 desactivado.")
             if (training) {
                 try {
@@ -357,6 +385,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                     record("session_started", null, mapOf("recordState" to "partial"))
                 } catch (error: Exception) { csvFailure(error); finish("error"); return }
             }
+            lifecycle.forEach(::recordLifecycle)
+            if (screenOff) screenChanged(true)
             if (cancelled) return // The queued stop records its own reason and closes the session.
             if (training || mode == "bkool_v1") beginV1() else beginFecSearch()
         }
@@ -402,7 +432,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             val report = mapOf(
                 "controlDiagnosticsVersion" to 13,
                 "recordState" to if (finished) "final" else "partial",
-                "backgroundPolicy" to if (training) "foreground_only" else null,
+                "backgroundPolicy" to if (training) "foreground_service" else null,
+                "trainingServiceActive" to (!finished && trainingOwner?.isOperational() == true),
                 "transmissionDiagnostics" to (transmissionAudit.snapshot() + mapOf(
                     "lastManualOrder" to manualState["lastManualApiSuccess"],
                     "lastStopCommand" to manualState["lastStopCommand"],
@@ -448,7 +479,12 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             )
             if (training && finished) lastFinished = report
             latest = report
-            main.post { if (latest === report) { sink?.success(snapshot()) } }
+            main.post {
+                if (latest === report) {
+                    sink?.success(report)
+                    trainingOwner?.publish(report)
+                }
+            }
         }
         private fun deadline(seconds: Int, action: () -> Unit) {
             phaseDeadline?.let { main.removeCallbacks(it) }
@@ -706,6 +742,9 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             }
             if (training && decoded != null) {
                 if (!identityVerified) { identityVerified = true; event("identity_verified", "Identidad extendida recibida coincide con $target") }
+                if (isScreenOff && ++screenOffFrames == 1L) recordLifecycle(mapOf(
+                    "event" to "ant_received_screen_off", "receivedAtMs" to receivedAt,
+                    "page" to (decoded.payload[0].toInt() and 255)))
                 identificationTiming.receive(decoded, receivedAt)
                 telemetry!!.receive(decoded, receivedAt)
                 observeBkoolPage11(decoded.payload)?.let { manual.observePage11(it, receivedAt) }
@@ -828,6 +867,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             manual.completeStop(clean)
             status = if (!clean) "cleanup_failed" else reason
             if (training) {
+                if (trainingOwner != null) recordLifecycle(mapOf("event" to "service_stopping",
+                    "reason" to reason, "screenOff" to isScreenOff, "antFramesWhileOff" to screenOffFrames))
                 record("finished:$reason", null, mapOf("recordState" to "final", "status" to status,
                     "stopReason" to reason, "resourcesReleased" to clean, "stopResult" to manual.snapshot()["stopResult"]))
                 try { csv?.close() } catch (error: Exception) { csvFailure(error) }
@@ -839,6 +880,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             publish()
             if (resourcesReleased) AntRadioCoordinator.release(this)
             active = null
+            main.post { trainingOwner?.finished() }
             stopReplies.forEach { it.success(snapshot()) }; stopReplies.clear()
             worker.shutdown()
         }

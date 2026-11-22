@@ -34,7 +34,20 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
     super.initState();
     unawaited(session.restore());
     if (widget.session == null) {
-      unawaited(session.training.attachToTraining().catchError((Object _) {}));
+      unawaited(restoreActiveTraining());
+    }
+  }
+
+  Future<void> restoreActiveTraining() async {
+    try {
+      await session.training.attachToTraining();
+      if (mounted &&
+          session.training.running &&
+          ModalRoute.of(context)?.isCurrent == true) {
+        openTraining();
+      }
+    } catch (_) {
+      // Starting a workout still reports channel errors through its normal UI.
     }
   }
 

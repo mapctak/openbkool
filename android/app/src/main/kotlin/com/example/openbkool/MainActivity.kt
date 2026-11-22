@@ -9,7 +9,9 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
-    private var training: AntTrainerSearch? = null
+    private var trainingEvents: EventChannel.StreamHandler? = null
+    private data class RequestedTraining(val device: Map<String, Any?>?, val reply: MethodChannel.Result)
+    private var trainingPermissionRequest: RequestedTraining? = null
     private var antTrainerSearch: AntTrainerSearch? = null
     private var antDiagnostics: AntDiagnostics? = null
     private val permissionRequestCode = 4818
@@ -23,27 +25,34 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler(preferences::handle)
         antDiagnostics = AntDiagnostics(this)
         antTrainerSearch = AntTrainerSearch(this)
-        training = AntTrainerSearch(applicationContext, training = true)
-        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/training/events").setStreamHandler(training)
+        trainingEvents = TrainingService.streamHandler()
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/training/events").setStreamHandler(trainingEvents)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/training").setMethodCallHandler { call, result ->
-            val session = training
-            if (session == null) result.error("not_ready", "Entrenamiento no inicializado", null)
-            else when (call.method) {
-                "start" -> {
-                    if (visible) session.start(call.argument<String>("mode") ?: "training_connected", result,
-                        call.argument<Map<String, Any?>>("device"))
-                    else result.error("app_background", "Abre OpenBkool para iniciar el entrenamiento", null)
+            val session = TrainingService.controller()
+            when (call.method) {
+                "start" -> startTraining(call.argument<Map<String, Any?>>("device"), result)
+                "stop" -> {
+                    trainingPermissionRequest?.reply?.error("training_start_cancelled", "Entrenamiento sin iniciar", null)
+                    trainingPermissionRequest = null
+                    TrainingService.stop(result, if (call.argument<String>("reason") == "screen_closed") "screen_closed" else "user_finish")
                 }
-                "authorizeControl", "setManualSlope" -> session.manualAction(call.method,
-                    call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
-                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("requestedAtUtc"),
-                    call.argument<Boolean>("rapidAdjustment") == true, call.argument<Number>("uiQueueMs")?.toLong())
-                "stop" -> session.stop(result, if (call.argument<String>("reason") == "screen_closed") "screen_closed" else "user_finish")
-                "snapshot" -> result.success(session.snapshot())
-                "exportCsv" -> session.exportCsv(call.argument<String>("sessionId"), result)
-                "exportJson" -> session.exportJson(call.argument<String>("sessionId"),
-                    call.argument<Boolean>("final") == true, result)
-                else -> result.notImplemented()
+                "snapshot" -> result.success(TrainingService.snapshot())
+                else -> {
+                    if (session == null) {
+                        result.error("not_ready", "No hay un registro de entrenamiento", null)
+                        return@setMethodCallHandler
+                    }
+                    when (call.method) {
+                        "authorizeControl", "setManualSlope" -> session.manualAction(call.method,
+                            call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
+                            call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("requestedAtUtc"),
+                            call.argument<Boolean>("rapidAdjustment") == true, call.argument<Number>("uiQueueMs")?.toLong())
+                        "exportCsv" -> session.exportCsv(call.argument<String>("sessionId"), result)
+                        "exportJson" -> session.exportJson(call.argument<String>("sessionId"),
+                            call.argument<Boolean>("final") == true, result)
+                        else -> result.notImplemented()
+                    }
+                }
             }
         }
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/ant_search/events")
@@ -101,8 +110,10 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
-        training?.dispose()
-        training = null
+        trainingEvents?.onCancel(null)
+        trainingEvents = null
+        trainingPermissionRequest?.reply?.error("training_start_cancelled", "Actividad cerrada", null)
+        trainingPermissionRequest = null
         antTrainerSearch?.dispose()
         antTrainerSearch = null
         antDiagnostics?.dispose()
@@ -115,15 +126,40 @@ class MainActivity : FlutterActivity() {
         visible = true
     }
 
+    override fun onResume() {
+        super.onResume()
+        TrainingService.activityChanged(true)
+    }
+
     override fun onStop() {
         visible = false
-        training?.stop(reason = "app_background", lifecycle = mapOf(
-            "event" to "activity_stopped", "decision" to "app_background",
-            "backgroundAuthorized" to false, "policy" to "foreground_only",
-            "monotonicMs" to android.os.SystemClock.elapsedRealtime(),
-        ))
+        TrainingService.activityChanged(false)
         antTrainerSearch?.stop(reason = "app_background")
         super.onStop()
+    }
+
+    private fun startTraining(device: Map<String, Any?>?, result: MethodChannel.Result) {
+        if (!visible) { result.error("training_not_visible", "Abre OpenBkool para iniciar el entrenamiento", null); return }
+        if (trainingPermissionRequest != null) {
+            result.error("permission_request_pending", "Ya hay una solicitud de permisos", null)
+            return
+        }
+        val status = TrainingService.permissionStatus(this)
+        val missing = buildList {
+            if (Build.VERSION.SDK_INT >= 33 && !status.notificationsGranted) add(Manifest.permission.POST_NOTIFICATIONS)
+            if (Build.VERSION.SDK_INT >= 34 && !status.nearbyGranted) add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (missing.isEmpty()) {
+            TrainingService.start(this, device, result)
+        } else {
+            trainingPermissionRequest = RequestedTraining(device, result)
+            try {
+                requestPermissions(missing.toTypedArray(), permissionRequestCode + 1)
+            } catch (error: RuntimeException) {
+                trainingPermissionRequest = null
+                result.error("permission_request_failed", error.message, null)
+            }
+        }
     }
 
     private fun scanPermissions(): List<String> = buildList {
@@ -141,6 +177,13 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == permissionRequestCode + 1) {
+            val request = trainingPermissionRequest ?: return
+            trainingPermissionRequest = null
+            if (visible) TrainingService.start(this, request.device, request.reply)
+            else request.reply.error("training_not_visible", "Abre OpenBkool para iniciar el entrenamiento", null)
+            return
+        }
         if (requestCode != permissionRequestCode) return
         val result = permissionResult ?: return
         permissionResult = null

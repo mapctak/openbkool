@@ -5,9 +5,10 @@ Muestra velocidad, potencia, cadencia, distancia y tiempo. La autorización
 explícita habilita las 41 pendientes de −5 % a +15 % en pasos de 0,5 % para esa
 sesión. Las pendientes negativas y superiores a +3 % siguen siendo experimentales.
 
-Mantén OpenBkool visible durante el entrenamiento. Bloquear la pantalla,
-cambiar de aplicación o salir del entrenamiento solicita la parada nativa.
-Puedes copiar el CSV al finalizar y el JSON desde la sesión. [Entrenamiento libre y validación](docs/entrenamiento_libre_1_5.md).
+En Android, el servicio de entrenamiento mantiene ANT y ofrece **DETENER**
+en la notificación. Comprueba que esta aparezca antes de apagar la pantalla.
+Puedes copiar el CSV y el JSON final tras detener. La continuidad física en
+el Galaxy S20 sigue pendiente de validación. [Segundo plano y procedimiento](docs/entrenamiento_segundo_plano_1_6.md).
 
 Inicio permite seleccionar o buscar el rodillo recordado. **Ajustes →
 Diagnósticos avanzados** conserva la inspección de capacidades ANT, el escaneo
