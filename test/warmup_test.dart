@@ -9,6 +9,15 @@ import 'package:openbkool/training.dart';
 
 import 'app_home_test.dart' show FakeTraining;
 
+class ActivationProbe extends FakeTraining {
+  final authorizations = <String>[];
+
+  @override
+  Future<void> authorizeControl(String sessionId) async {
+    authorizations.add(sessionId);
+  }
+}
+
 void main() {
   for (final immediate in [true, false]) {
     testWidgets(
@@ -61,7 +70,7 @@ void main() {
           expect(find.text('127'), findsOneWidget);
           expect(find.text('00:00:08'), findsOneWidget);
           expect(find.text('0,14 km'), findsOneWidget);
-          expect(find.text('Autorizar rango completo'), findsNothing);
+          expect(find.text('Autorizar control de pendiente'), findsNothing);
           tester.binding.handleAppLifecycleStateChanged(
             AppLifecycleState.paused,
           );
@@ -80,17 +89,110 @@ void main() {
         await tester.pumpAndSettle();
         expect(training.starts, hasLength(1));
         expect(training.snapshot['sessionId'], 'warm');
-        expect(find.text('¡CALENTAMIENTO COMPLETADO!'), findsOneWidget);
-        expect(find.text('Autorizar rango completo'), findsOneWidget);
+        expect(find.text('Autorizar control de pendiente'), findsOneWidget);
         expect(canSelect(), isFalse);
-        await tester.pump(const Duration(seconds: 2));
-        expect(find.textContaining('CALENTAMIENTO'), findsNothing);
+        await tester.tap(find.text('Cancelar'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('CALENTAMIENTO'), findsOneWidget);
         expect(canSelect(), isFalse);
         await tester.pumpWidget(const SizedBox());
         session.dispose();
       },
     );
   }
+
+  testWidgets('saved consent is scoped and a new session waits for active', (
+    tester,
+  ) async {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    String? saved;
+    messenger.setMockMethodCallHandler(TrainerPreferences.channel, (
+      call,
+    ) async {
+      switch (call.method) {
+        case 'loadControlConsent':
+          return saved;
+        case 'saveControlConsent':
+          saved = call.arguments as String?;
+      }
+      return null;
+    });
+    addTearDown(
+      () =>
+          messenger.setMockMethodCallHandler(TrainerPreferences.channel, null),
+    );
+    final first = TrainerSession(training: ActivationProbe());
+    await first.restore();
+    expect(first.hasControlConsent, isFalse);
+    await first.setControlConsent(true);
+    first.dispose();
+
+    final training = ActivationProbe();
+    final session = TrainerSession(training: training);
+    await session.restore();
+    expect(session.hasControlConsent, isTrue);
+    await session.select(const SavedTrainer(30064, 112, 6));
+    expect(session.hasControlConsent, isFalse);
+    await session.select(SavedTrainer.known);
+
+    await tester.pumpWidget(MaterialApp(home: TrainingPage(session: session)));
+    await tester.pumpAndSettle();
+    final report = {
+      'sessionId': 'next-session',
+      'running': true,
+      'trainingServiceActive': true,
+      'selectedDevice': SavedTrainer.known.device,
+      'connectionState': 'identity_verified',
+      'manualControl': {
+        'eligible': true,
+        'enabled': false,
+        'state': 'available',
+      },
+      'telemetry': {'signal': 'receiving'},
+    };
+    bool canSelect() =>
+        tester
+            .widget<DropdownButton<double>>(
+              find.byKey(const ValueKey('trainingSlope')),
+            )
+            .onChanged !=
+        null;
+    training.emit({...report, 'connectionState': 'waiting_for_identity'});
+    await tester.pumpAndSettle();
+    expect(training.authorizations, isEmpty);
+    training.emit({...report, 'trainingServiceActive': false});
+    await tester.pumpAndSettle();
+    expect(training.authorizations, isEmpty);
+    training.emit(report);
+    await tester.pumpAndSettle();
+    expect(training.authorizations, ['next-session']);
+    expect(canSelect(), isFalse);
+    expect(find.textContaining('CALENTAMIENTO'), findsOneWidget);
+    expect(find.text('Guardar autorización'), findsNothing);
+    final active = {
+      ...report,
+      'manualControl': {'eligible': true, 'enabled': true, 'state': 'active'},
+    };
+    training.emit(active);
+    await tester.pumpAndSettle();
+    expect(canSelect(), isTrue);
+    expect(find.textContaining('CALENTAMIENTO'), findsNothing);
+    training.emit({
+      ...active,
+      'telemetry': {'signal': 'signal_lost'},
+    });
+    await tester.pumpAndSettle();
+    expect(canSelect(), isFalse);
+    expect(training.authorizations, hasLength(1));
+
+    await tester.pumpWidget(const SizedBox());
+    await training.stop();
+    await session.setControlConsent(false);
+    expect(saved, isNull);
+    expect(session.hasControlConsent, isFalse);
+    session.dispose();
+  });
 
   testWidgets('stop while subscribing cancels the pending native start', (
     tester,

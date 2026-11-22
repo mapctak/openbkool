@@ -27,6 +27,7 @@ void main() {
     bool eligible = true,
   }) => {
     'sessionId': 'latest',
+    'trainingServiceActive': true,
     'selectedDevice': SavedTrainer.known.device,
     'connectionState': 'identity_verified',
     'running': !stopped,

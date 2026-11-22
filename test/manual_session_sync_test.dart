@@ -30,6 +30,7 @@ void main() {
       final history = <Map<String, Object?>>[];
       Map<String, Object?> report() => {
         'sessionId': 'sync',
+        'trainingServiceActive': !stopped,
         'selectedDevice': SavedTrainer.known.device,
         'connectionState': 'identity_verified',
         'reportSequence': ++sequence,
@@ -39,6 +40,7 @@ void main() {
         if (stopped) 'csvFile': 'training_sync.csv',
         'manualControl': {
           'enabled': enabled,
+          'state': enabled ? 'active' : 'available',
           'eligible': true,
           'everEnabled': enabled || stopped,
           'stopped': stopped,

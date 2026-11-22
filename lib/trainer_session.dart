@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -69,6 +71,12 @@ class TrainerPreferences {
     final value = await channel.invokeMapMethod<String, dynamic>('loadTrainer');
     return value == null ? null : SavedTrainer.fromMap(value);
   }
+
+  Future<String?> loadControlConsent() =>
+      channel.invokeMethod<String>('loadControlConsent');
+
+  Future<void> saveControlConsent(String? record) =>
+      channel.invokeMethod<void>('saveControlConsent', record);
 
   Future<void> save(SavedTrainer trainer) =>
       channel.invokeMethod<void>('saveTrainer', trainer.toJson());
@@ -148,6 +156,39 @@ class TrainerSession extends ChangeNotifier {
   SavedTrainer selected = SavedTrainer.known;
   bool loading = true, saving = false, _disposed = false;
   bool _connecting = false;
+  static const controlPolicy = 1;
+  static const minSlope = -5.0, maxSlope = 15.0;
+  String? consentError;
+  String? _controlConsent;
+
+  String _consentRecord(SavedTrainer trainer) => jsonEncode({
+    ...trainer.device,
+    'manufacturerId': 67,
+    'modelNumber': 22,
+    'policyVersion': controlPolicy,
+    'minPercent': minSlope,
+    'maxPercent': maxSlope,
+  });
+
+  bool get hasControlConsent => _controlConsent == _consentRecord(selected);
+
+  Future<void> setControlConsent(bool granted) async {
+    if (loading || saving || (!granted && locked)) return;
+    final record = granted ? _consentRecord(selected) : null;
+    saving = true;
+    consentError = null;
+    _notify();
+    try {
+      await preferences.saveControlConsent(record);
+      _controlConsent = record;
+    } catch (_) {
+      consentError = 'No se pudo guardar el permiso de control.';
+    } finally {
+      saving = false;
+      _notify();
+    }
+  }
+
   String? preferenceError;
   int _selectionRevision = 0;
   TrainerConnection get connection => _connecting && !training.running
@@ -170,6 +211,11 @@ class TrainerSession extends ChangeNotifier {
       if (!_disposed && revision == _selectionRevision) {
         preferenceError = 'No se pudo leer el rodillo guardado: $error';
       }
+    }
+    try {
+      _controlConsent = await preferences.loadControlConsent();
+    } catch (_) {
+      consentError = 'No se pudo leer el permiso de control.';
     } finally {
       loading = false;
       _notify();

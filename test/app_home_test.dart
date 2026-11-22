@@ -65,7 +65,11 @@ void main() {
               'selectedDevice': SavedTrainer.known.device,
               'connectionState': 'identity_verified',
               'telemetry': {'signal': 'receiving'},
-              'manualControl': {'enabled': true, 'eligible': true},
+              'manualControl': {
+                'enabled': true,
+                'eligible': true,
+                'state': 'active',
+              },
             }),
             (_) {},
           );
@@ -126,7 +130,7 @@ void main() {
         'mode': 'training_connected',
         'device': const SavedTrainer(123, 112, 6).device,
       });
-      expect(find.text('ANT · Conectando'), findsOneWidget);
+      expect(find.text('ANT · CALENTAMIENTO'), findsOneWidget);
       expect(find.textContaining('Buscando rodillo'), findsOneWidget);
       training.emit({
         'running': true,
@@ -137,7 +141,7 @@ void main() {
         'telemetry': {'signal': 'receiving'},
       });
       await tester.pumpAndSettle();
-      expect(find.text('ANT · Conectado'), findsOneWidget);
+      expect(find.text('ANT · CALENTAMIENTO'), findsOneWidget);
       training.emit({
         'running': false,
         'status': 'start_error',

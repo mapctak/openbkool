@@ -16,9 +16,24 @@ void main() {
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
       final c = AntTrainerSearchController(channelName: 'openbkool/training');
-      final session = TrainerSession(training: c);
+      final session = TrainerSession(training: c)..loading = false;
       const stream = MethodChannel('openbkool/training/events');
       final calls = <MethodCall>[];
+      String? savedConsent;
+      messenger.setMockMethodCallHandler(TrainerPreferences.channel, (
+        call,
+      ) async {
+        if (call.method == 'saveControlConsent') {
+          savedConsent = call.arguments as String?;
+        }
+        return savedConsent;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(
+          TrainerPreferences.channel,
+          null,
+        ),
+      );
       final copied = <String>[];
       final initial = <String, Object?>{
         'running': true,
@@ -54,7 +69,11 @@ void main() {
         }
         return {
           ...initial,
-          'manualControl': {'enabled': true, 'eligible': true},
+          'manualControl': {
+            'enabled': true,
+            'eligible': true,
+            'state': 'active',
+          },
         };
       });
       messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
@@ -77,15 +96,16 @@ void main() {
         List.generate(41, (i) => -5 + 0.5 * i),
       );
       expect(dropdown.onChanged, isNull);
-      await tester.tap(find.text('Autorizar rango completo'));
       await tester.pumpAndSettle();
+      expect(find.text('Autorizar control de pendiente'), findsOneWidget);
       await tester.tap(find.text('Cancelar'));
       await tester.pumpAndSettle();
       expect(calls, isEmpty);
-      await tester.tap(find.text('Autorizar rango completo'));
+      await tester.tap(find.text('Revisar permiso de control'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Autorizar sesión'));
+      await tester.tap(find.text('Guardar autorización'));
       await tester.pumpAndSettle();
+      expect(jsonDecode(savedConsent!)['deviceNumber'], 30064);
       expect(calls.single.method, 'authorizeControl');
       expect(calls.single.arguments, {
         'sessionId': 'session',
@@ -103,7 +123,7 @@ void main() {
       expect(calls, hasLength(2));
       await publish({
         ...initial,
-        'manualControl': {'enabled': true, 'eligible': true},
+        'manualControl': {'enabled': true, 'eligible': true, 'state': 'active'},
         'events': [
           {
             'event': 'android_lifecycle',

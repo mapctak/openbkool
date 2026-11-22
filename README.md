@@ -3,8 +3,8 @@
 **ENTRENAMIENTO LIBRE** comienza con un calentamiento y conecta por ANT
 propietario con la identidad guardada del Bkool Smart Pro v1. El cuadro muestra
 tiempo, velocidad, potencia, cadencia, distancia y un perfil de elevación virtual.
-Al completarse la identificación, la autorización explícita habilita las 41
-pendientes de −5 % a +15 % para esa sesión. Las pendientes negativas y superiores
+Al completarse la identificación, el motor activa las 41 pendientes de −5 % a
++15 % si el usuario ya autorizó ese rodillo. El permiso se puede revocar en Ajustes. Las pendientes negativas y superiores
 a +8 % siguen pendientes de validación física completa.
 [Cuadro de entrenamiento y perfil virtual](docs/cuadro_entrenamiento_1_7.md).
 

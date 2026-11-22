@@ -59,6 +59,7 @@ void main() {
           'manualControl': {
             'eligible': true,
             'enabled': true,
+            'state': 'active',
             'lastRequestedPercent': 3.5,
           },
           'virtualElevation': profile,
