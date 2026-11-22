@@ -22,12 +22,15 @@ void main() {
     },
   };
   testWidgets(
-    'background stops once, resume sends nothing and leaves control stopped',
+    'Flutter pause and resume do not stop a workout from a stale snapshot',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1200, 2200));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final c = AntTrainerSearchController(channelName: 'openbkool/training');
-      c.snapshot = active();
+      c.snapshot = {
+        ...active(),
+        'backgroundBlockReason': 'notification_permission_denied',
+      };
       final calls = <MethodCall>[];
       messenger.setMockMethodCallHandler(c.channel, (call) async {
         calls.add(call);
@@ -42,14 +45,23 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Control: Activo'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Bloquear la pantalla o cambiar de app detendrá la sesión',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Permite las notificaciones de OpenBkool'),
+        findsOneWidget,
+      );
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pumpAndSettle();
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
-      expect(calls.map((c) => c.method), ['stop']);
-      expect((calls.single.arguments as Map)['reason'], 'app_background');
-      expect(find.text('Control: Detenido'), findsOneWidget);
-      expect(c.running, false);
+      expect(calls, isEmpty);
+      expect(find.text('Control: Activo'), findsOneWidget);
+      expect(c.running, true);
       await tester.pumpWidget(const SizedBox());
       c.dispose();
       messenger.setMockMethodCallHandler(c.channel, null);

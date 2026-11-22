@@ -22,6 +22,57 @@ class LatestManualChangeTest {
         fun tick(t:Long){now=t;c.supervise();c.refreshTarget()}
         fun pending()=c.snapshot()["pendingManualChange"] as Map<*,*>?
     }
+    @Test fun rapidStepsKeepOnlyLatestAndDoNotRaiseTransportRate() {
+        val sim = Sim()
+        sim.arm("original")
+        assertEquals("api_returned", sim.c.request(0.5, rapidAdjustment = true)["event"])
+        for (step in 2..6) {
+            sim.now = 800L + (step - 2) * 100L
+            assertEquals("manual_pending", sim.c.request(step / 2.0, rapidAdjustment = true)["event"])
+            sim.c.refreshTarget()
+        }
+        sim.tick(1379)
+        assertEquals(listOf(0L to hex(encodePro1Slope(0.5))), sim.frames)
+        sim.tick(1380)
+        assertEquals(1380L to hex(encodePro1Slope(3.0)), sim.frames.last())
+        assertEquals(2, sim.frames.size)
+    }
+
+    @Test fun individualDirectAndFlatBypassQuietWindowWhileStopCancelsAdjustment() {
+        val sim = Sim()
+        sim.arm("original")
+        assertEquals("api_returned", sim.c.request(3.0)["event"])
+        sim.now = 950
+        sim.c.request(3.5, rapidAdjustment = true)
+        sim.now = 1000
+        assertEquals("api_returned", sim.c.request(0.0)["event"])
+        assertEquals(1000L to hex(encodePro1Slope(0.0)), sim.frames.last())
+        sim.now = 1950
+        sim.c.request(4.0, rapidAdjustment = true)
+        sim.now = 2000
+        assertTrue(sim.c.stop("manual_stop", allowZero = true))
+        sim.tick(3000)
+        assertEquals(3, sim.frames.size)
+        assertEquals(2000L to hex(encodePro1Slope(0.0)), sim.frames.last())
+    }
+
+    @Test fun refreshHasSdkTimingWithoutManualRequestLatency() {
+        val sim = Sim()
+        sim.arm()
+        sim.now = 100
+        sim.c.request(0.5, requestedAt = 90, uiQueueMs = 30)
+        sim.tick(5100)
+        val manual = sim.events.first { it["event"] == "api_returned" }
+        val refresh = sim.events.last { it["event"] == "api_returned" }
+        assertEquals(30L, manual["uiQueueMs"])
+        assertEquals(10L, manual["requestToApiEntryMs"])
+        assertEquals(true, refresh["periodicRefresh"])
+        assertNull(refresh["requestId"])
+        assertNull(refresh["requestedAtMs"])
+        assertNull(refresh["requestToApiEntryMs"])
+        assertEquals(0L, refresh["apiDurationMs"])
+    }
+
     @Test fun firstSubsequentMatchingPage11IsCorrelatedWithoutAcknowledgement() {
         val sim = Sim()
         sim.now = 1000

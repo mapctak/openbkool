@@ -36,11 +36,9 @@ class ManualRidePage extends StatefulWidget {
   State<ManualRidePage> createState() => _ManualRidePageState();
 }
 
-class _ManualRidePageState extends State<ManualRidePage>
-    with WidgetsBindingObserver {
+class _ManualRidePageState extends State<ManualRidePage> {
   double selected = 0;
   String? sessionId;
-  bool backgroundStopRequested = false;
   late String rangeProfile;
   bool get lowLoad => rangeProfile == 'low';
   bool authorizedValue(double value) => widget.refreshTrial || lowLoad
@@ -71,32 +69,6 @@ class _ManualRidePageState extends State<ManualRidePage>
     super.initState();
     rangeProfile =
         widget.initialProfile ?? (widget.lowLoad ? 'low' : 'original');
-    WidgetsBinding.instance.addObserver(this);
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    if (widget.controller.running &&
-        !widget.controller.backgroundAuthorized &&
-        !backgroundStopRequested) {
-      unawaited(widget.controller.stop(reason: 'screen_closed'));
-    }
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      backgroundStopRequested = false; // Never arm, resume or send here.
-    } else if ((state == AppLifecycleState.paused ||
-            state == AppLifecycleState.detached) &&
-        widget.controller.running &&
-        !widget.controller.backgroundAuthorized &&
-        !backgroundStopRequested) {
-      backgroundStopRequested = true;
-      unawaited(widget.controller.stop(reason: 'app_background'));
-    }
   }
 
   bool get usable {
@@ -117,12 +89,13 @@ class _ManualRidePageState extends State<ManualRidePage>
             (m['remainingMs'] is num && (m['remainingMs'] as num) > 0));
   }
 
-  Future<void> request(double value) async {
+  Future<void> request(double value, {bool rapidAdjustment = false}) async {
     if (!usable || !slopes.contains(value) || !authorizedValue(value)) return;
     setState(() => selected = value);
     await widget.controller.manualAction(
       'setManualSlope',
       percent: value,
+      rapidAdjustment: rapidAdjustment,
       expectedSessionId: sessionId,
     );
   }
@@ -255,7 +228,10 @@ class _ManualRidePageState extends State<ManualRidePage>
                               usable &&
                                   authorizedValue(selected) &&
                                   authorizedValue(selected - 0.5)
-                              ? () => request(selected - 0.5)
+                              ? () => request(
+                                  selected - 0.5,
+                                  rapidAdjustment: true,
+                                )
                               : null,
                           child: const Text(
                             '−',
@@ -281,7 +257,10 @@ class _ManualRidePageState extends State<ManualRidePage>
                               usable &&
                                   authorizedValue(selected) &&
                                   authorizedValue(selected + 0.5)
-                              ? () => request(selected + 0.5)
+                              ? () => request(
+                                  selected + 0.5,
+                                  rapidAdjustment: true,
+                                )
                               : null,
                           child: const Text(
                             '+',

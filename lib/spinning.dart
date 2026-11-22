@@ -99,10 +99,6 @@ class _SpinningSessionPageState extends State<SpinningSessionPage>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached) {
       _pause();
-      if (widget.session.training.running &&
-          !widget.session.training.backgroundAuthorized) {
-        unawaited(widget.session.training.stop(reason: 'app_background'));
-      }
     }
     // Resume is always explicit; no automatic timer/ANT restart.
   }

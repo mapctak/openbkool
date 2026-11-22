@@ -40,11 +40,13 @@ class MainActivity : FlutterActivity() {
                 }
                 "enableManualTest", "setManualSlope", "stopManualTest" -> session.manualAction(call.method,
                     call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
-                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true, call.argument<String>("rangeProfile"), call.argument<String>("requestedAtUtc"))
+                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true, call.argument<String>("rangeProfile"), call.argument<String>("requestedAtUtc"),
+                    call.argument<Boolean>("rapidAdjustment") == true, call.argument<Number>("uiQueueMs")?.toLong())
                 "stop" -> {
                     val requested = call.argument<String>("reason")
                     val reason = requested?.takeIf { it in setOf("screen_closed", "app_background", "controller_disposed", "user_finish") } ?: "stopped"
-                    if (reason == "app_background" && TrainingService.backgroundAuthorized) {
+                    if (reason == "app_background") {
+                        TrainingService.recordLegacyPause()
                         result.success(session.snapshot())
                     } else {
                         cancelNotificationStart(reason)
@@ -124,12 +126,12 @@ class MainActivity : FlutterActivity() {
 
     override fun onStart() {
         super.onStart()
-        TrainingService.setVisible(true)
+        TrainingService.setVisible(applicationContext, true)
     }
 
     override fun onStop() {
         cancelNotificationStart("app_background")
-        TrainingService.setVisible(false)
+        TrainingService.setVisible(applicationContext, false)
         antTrainerSearch?.stop(reason = "app_background")
         super.onStop()
     }
@@ -140,7 +142,7 @@ class MainActivity : FlutterActivity() {
             return
         }
         val missing = buildList {
-            if (Build.VERSION.SDK_INT >= 31 &&
+            if (Build.VERSION.SDK_INT >= 34 &&
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED &&
                 checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                 add(Manifest.permission.BLUETOOTH_CONNECT)

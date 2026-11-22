@@ -33,9 +33,7 @@ class TrainingPage extends StatefulWidget {
   State<TrainingPage> createState() => _TrainingPageState();
 }
 
-class _TrainingPageState extends State<TrainingPage>
-    with WidgetsBindingObserver {
-  bool _backgroundStopRequested = false;
+class _TrainingPageState extends State<TrainingPage> {
   String _controlMode = 'trial_30s';
   Map<String, Object?> selected = const {
     'protocol': 'BKOOL_V1_PUBLIC',
@@ -46,32 +44,9 @@ class _TrainingPageState extends State<TrainingPage>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     if (widget.initialDevice != null) {
       selected = Map<String, Object?>.from(widget.initialDevice!);
     }
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _backgroundStopRequested =
-          false; // Never reconnect, arm or replay on resume.
-    } else if ((state == AppLifecycleState.paused ||
-            state == AppLifecycleState.detached) &&
-        widget.stopOnExit &&
-        widget.controller.running &&
-        !widget.controller.backgroundAuthorized &&
-        !_backgroundStopRequested) {
-      _backgroundStopRequested = true;
-      widget.controller.stop(reason: 'app_background');
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
   }
 
   SlopeUiIntent? _slopeIntent;

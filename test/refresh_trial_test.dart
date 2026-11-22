@@ -213,7 +213,7 @@ void main() {
       await clean(tester, c);
     },
   );
-  testWidgets('trial background stops once and return does not arm or replay', (
+  testWidgets('trial pause and resume leave stopping to native supervision', (
     tester,
   ) async {
     final c = TrialController();
@@ -228,8 +228,7 @@ void main() {
     await tester.pumpAndSettle();
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pumpAndSettle();
-    expect(calls.single.method, 'stop');
-    expect((calls.single.arguments as Map)['reason'], 'app_background');
+    expect(calls, isEmpty);
     await clean(tester, c);
   });
   testWidgets(

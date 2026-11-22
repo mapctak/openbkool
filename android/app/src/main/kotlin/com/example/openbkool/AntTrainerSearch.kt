@@ -88,14 +88,21 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         result.success(mapOf("accepted" to true))
     }
 
-    fun stop(result: MethodChannel.Result? = null, reason: String = "stopped") {
+    fun stop(result: MethodChannel.Result? = null, reason: String = "stopped", lifecycle: Map<String, Any?>? = null) {
         val session = active
         if (session == null) { result?.success(latest); return }
         session.cancelled = true
         session.invalidateTargets(reason)
         try {
-            session.worker.execute { session.end(reason, result) }
+            session.worker.execute {
+                lifecycle?.let(session::recordLifecycle)
+                session.end(reason, result)
+            }
         } catch (_: RejectedExecutionException) { result?.success(latest) }
+    }
+    fun recordLifecycle(entry: Map<String, Any?>) {
+        val session = active ?: return
+        session.submit { session.recordLifecycle(entry) }
     }
     fun prepareSlope(percent: Double, result: MethodChannel.Result) {
         val session = active
@@ -103,7 +110,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         try { session.worker.execute { session.prepareSlope(percent, result) } }
         catch (_: RejectedExecutionException) { result.error("session_closed", "Sesión cerrada", null) }
     }
-    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String? = "trial_30s", experimentalConfirmed: Boolean = false, rangeProfile: String? = null, requestedAtUtc: String? = null) {
+    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String? = "trial_30s", experimentalConfirmed: Boolean = false, rangeProfile: String? = null, requestedAtUtc: String? = null, rapidAdjustment: Boolean = false, uiQueueMs: Long? = null) {
         val requestedAt = android.os.SystemClock.elapsedRealtime()
         val session = active
         if (!training || session == null) { result.error("not_connected", "No hay entrenamiento activo", null); return }
@@ -118,7 +125,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             if (manualChange) session.waitingManualChanges.decrementAndGet()
             val cancelled = if (queued) session.commandFence.dequeue() else null
             if (cancelled != null) session.rejectPending(method, percent, cancelled, result)
-            else session.manualAction(method, sessionId, explicit, percent, result, controlMode, experimentalConfirmed, rangeProfile, requestedAt, requestedAtUtc)
+            else session.manualAction(method, sessionId, explicit, percent, result, controlMode, experimentalConfirmed, rangeProfile, requestedAt, requestedAtUtc, rapidAdjustment, uiQueueMs)
         } }
         catch (_: RejectedExecutionException) {
             if (queued) session.commandFence.dequeue()
@@ -265,6 +272,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             runCatching { csv?.close() }; csv = null
             event("csv_error", "Registro CSV interrumpido: $error")
         }
+        fun recordLifecycle(entry: Map<String, Any?>) {
+            event("android_lifecycle", entry["event"].toString(), details = entry)
+            record("android:${entry["event"]}", null, entry)
+        }
         private fun record(kind: String, payload: ByteArray?, details: Map<String, Any?>? = null) {
             val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()) ?: return
             try { csv?.write(csvRow(listOf(now(), t["elapsedMs"], kind, "BKOOL_V1_PUBLIC", target.number, target.type, target.transmission,
@@ -329,7 +340,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             publish()
             result.error("command_cancelled", "Orden cancelada por parada: $reason", null)
         }
-        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String?, experimentalConfirmed: Boolean, rangeProfile: String?, requestedAt: Long, requestedAtUtc: String?) {
+        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String?, experimentalConfirmed: Boolean, rangeProfile: String?, requestedAt: Long, requestedAtUtc: String?, rapidAdjustment: Boolean, uiQueueMs: Long?) {
             if (sessionId != id) { result.error("stale_session", "La sesión ha cambiado; vuelve a conectar", null); return }
             if (finished || stopping || (cancelled && method != "stopManualTest")) {
                 result.error("session_stopping", "La sesión está cerrándose", null); return
@@ -354,7 +365,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 }
                 "setManualSlope" -> {
                     if (percent == null) { result.error("invalid_slope", "Pendiente numérica requerida", null); return }
-                    manual.request(percent, requestedAt, requestedAtUtc)
+                    manual.request(percent, requestedAt, requestedAtUtc, rapidAdjustment, uiQueueMs)
                     scheduleManualDispatch()
                 }
                 "stopManualTest" -> { end("manual_stop", result); return }
@@ -373,6 +384,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     csv!!.write(csvRow(listOf("timestamp_utc", "elapsed_ms", "event", "protocol", "device_id", "device_type", "transmission_type",
                         "payload_hex", "speed_kmh", "power_w", "cadence_rpm", "distance_m", "signal", "distance_partial", "speed_age_ms", "power_age_ms", "details_json")))
                 } catch (error: Exception) { csvFailure(error); finish("error"); return }
+            }
+            if (training) {
+                val lifecycle = backgroundStatus()["backgroundLifecycle"] as? List<*>
+                lifecycle?.filterIsInstance<Map<String, Any?>>()?.forEach(::recordLifecycle)
             }
             if (training || mode == "bkool_v1") beginV1() else beginFecSearch()
         }
@@ -861,7 +876,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             if (resourcesReleased) AntRadioCoordinator.release(this)
             active = null
             main.post { if (active == null) onFinished() }
-            stopReplies.forEach { it.success(latest) }; stopReplies.clear()
+            stopReplies.forEach { it.success(snapshot()) }; stopReplies.clear()
             worker.shutdown()
         }
     }

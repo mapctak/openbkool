@@ -5,8 +5,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class _DeferredSlope {
-  _DeferredSlope(this.percent, this.sessionId, this.generation);
+  _DeferredSlope(
+    this.percent,
+    this.sessionId,
+    this.generation,
+    this.rapidAdjustment,
+  );
   final double percent;
+  final bool rapidAdjustment;
+  final stopwatch = Stopwatch()..start();
   final String? sessionId;
   final int generation;
   final requestedAtUtc = DateTime.now().toUtc().toIso8601String();
@@ -66,7 +73,11 @@ class AntTrainerSearchController extends ChangeNotifier {
     }
   }
 
-  Future<void> _queueSlope(double percent, String? sessionId) {
+  Future<void> _queueSlope(
+    double percent,
+    String? sessionId,
+    bool rapidAdjustment,
+  ) {
     if (_disposed ||
         manualStopping ||
         controlTransportUncertain ||
@@ -77,6 +88,7 @@ class AntTrainerSearchController extends ChangeNotifier {
       percent,
       sessionId ?? snapshot['sessionId'] as String?,
       _manualGeneration,
+      rapidAdjustment,
     );
     final previous = _nextSlope;
     if (previous != null) {
@@ -112,6 +124,8 @@ class AntTrainerSearchController extends ChangeNotifier {
           percent: wanted.percent,
           expectedSessionId: wanted.sessionId,
           requestedAtUtc: wanted.requestedAtUtc,
+          uiQueueMs: wanted.stopwatch.elapsedMilliseconds,
+          rapidAdjustment: wanted.rapidAdjustment,
         );
         _activeSlope = null;
         wanted.done.complete();
@@ -130,6 +144,7 @@ class AntTrainerSearchController extends ChangeNotifier {
   }
 
   Map<String, Object?> snapshot = {'status': 'not_started', 'running': false};
+  bool get _nativeTrainingLifecycle => channel.name == 'openbkool/training';
   bool get backgroundAuthorized => snapshot['backgroundAuthorized'] == true;
   bool get running => snapshot['running'] == true;
   bool get controlTransportUncertain =>
@@ -188,7 +203,7 @@ class AntTrainerSearchController extends ChangeNotifier {
             'controlTransportUncertain': true,
           };
           _notify();
-          if (running && !backgroundAuthorized) unawaited(stop());
+          if (running && !_nativeTrainingLifecycle) unawaited(stop());
         },
       );
     }
@@ -270,6 +285,8 @@ class AntTrainerSearchController extends ChangeNotifier {
         'status': 'start_error',
         'running': false,
         'clientError': error.toString(),
+        if (error is PlatformException && error.details is Map)
+          ...Map<String, Object?>.from(error.details as Map),
       };
     } finally {
       commandBusy = false;
@@ -306,6 +323,7 @@ class AntTrainerSearchController extends ChangeNotifier {
   Future<void> manualAction(
     String method, {
     double? percent,
+    bool rapidAdjustment = false,
     bool confirmed = false,
     String controlMode = 'trial_30s',
     bool experimentalConfirmed = false,
@@ -313,7 +331,7 @@ class AntTrainerSearchController extends ChangeNotifier {
     String? expectedSessionId,
   }) {
     if (method == 'setManualSlope' && percent != null) {
-      return _queueSlope(percent, expectedSessionId);
+      return _queueSlope(percent, expectedSessionId, rapidAdjustment);
     }
     if (method == 'stopManualTest') _cancelDeferredSlope('manual_stop');
     return _performManualAction(
@@ -331,6 +349,8 @@ class AntTrainerSearchController extends ChangeNotifier {
     String method, {
     double? percent,
     String? requestedAtUtc,
+    int? uiQueueMs,
+    bool rapidAdjustment = false,
     bool confirmed = false,
     String controlMode = 'trial_30s',
     bool experimentalConfirmed = false,
@@ -360,6 +380,8 @@ class AntTrainerSearchController extends ChangeNotifier {
             if (method == 'enableManualTest') 'rangeProfile': rangeProfile,
             'percent': ?percent,
             'requestedAtUtc': ?requestedAtUtc,
+            'uiQueueMs': ?uiQueueMs,
+            if (rapidAdjustment) 'rapidAdjustment': true,
           })
           .timeout(const Duration(seconds: 20));
       if (report != null && generation == _manualGeneration) _update(report);
@@ -382,7 +404,7 @@ class AntTrainerSearchController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    if (running && !backgroundAuthorized) {
+    if (running && !_nativeTrainingLifecycle) {
       unawaited(stop(reason: 'controller_disposed'));
     }
     unawaited(_subscription?.cancel());

@@ -78,6 +78,29 @@ void main() {
       .onChanged!(p);
 
   testWidgets(
+    'step buttons mark adjustments while direct selection and LLANO stay immediate',
+    (tester) async {
+      final c = LatestUiController()..snapshot = report(accepted: 0);
+      final calls = <Map>[];
+      messenger.setMockMethodCallHandler(c.channel, (call) async {
+        calls.add(call.arguments as Map);
+        return report();
+      });
+      await show(tester, c);
+      await tester.tap(find.widgetWithText(FilledButton, '+'));
+      await tester.pumpAndSettle();
+      select(tester, 3);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('LLANO 0 %'));
+      await tester.pumpAndSettle();
+      expect(calls.map((call) => call['percent']), [0.5, 3.0, 0.0]);
+      expect(calls.map((call) => call['rapidAdjustment']), [true, null, null]);
+      expect(calls.every((call) => call['uiQueueMs'] is int), isTrue);
+      await clean(tester, c);
+    },
+  );
+
+  testWidgets(
     'rapid edits during native RPC retain only latest LLANO and show native pending until accepted',
     (tester) async {
       final c = LatestUiController()..snapshot = report();
@@ -147,7 +170,7 @@ void main() {
   );
 
   testWidgets(
-    'background and link loss discard deferred selection without automatic recovery',
+    'native background stop and link loss discard deferred selection',
     (tester) async {
       for (final background in [false, true]) {
         final c = LatestUiController()..snapshot = report();
@@ -170,7 +193,9 @@ void main() {
           );
           await tester.pump();
         }
-        first.complete(background ? report() : report(eligible: false));
+        first.complete(
+          background ? report(stopped: true) : report(eligible: false),
+        );
         await tester.pumpAndSettle();
         tester.binding.handleAppLifecycleStateChanged(
           AppLifecycleState.resumed,

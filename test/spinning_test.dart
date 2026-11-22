@@ -138,7 +138,7 @@ void main() {
     s.dispose();
     messenger.setMockMethodCallHandler(s.training.channel, null);
   });
-  testWidgets('background pauses guide, stops ANT and resume is explicit', (
+  testWidgets('background pauses guide and leaves ANT lifecycle to Android', (
     tester,
   ) async {
     final s = session();
@@ -163,8 +163,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(e.state, SpinningState.paused);
     expect(e.elapsed, const Duration(seconds: 4));
-    expect(calls.map((c) => c.method), ['stop']);
-    expect((calls.single.arguments as Map)['reason'], 'app_background');
+    expect(calls, isEmpty);
     await tester.pumpWidget(const SizedBox());
     s.dispose();
     messenger.setMockMethodCallHandler(s.training.channel, null);

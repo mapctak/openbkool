@@ -261,33 +261,31 @@ void main() {
       await clean(tester, c);
     },
   );
-  testWidgets(
-    'active background stops once and forced screen removal cancels session',
-    (tester) async {
-      final c = AntTrainerSearchController(
-        channelName: 'openbkool/manual-ride-sim',
-      );
-      c.snapshot = report(allowed: true, active: true);
-      final calls = <MethodCall>[];
-      messenger.setMockMethodCallHandler(c.channel, (call) async {
-        calls.add(call);
-        return {...c.snapshot, 'running': false};
-      });
-      await show(tester, c);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      await tester.pumpAndSettle();
-      expect(calls.single.method, 'stop');
-      expect((calls.single.arguments as Map)['reason'], 'app_background');
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-      await tester.pumpAndSettle();
-      expect(calls.length, 1);
-      c.snapshot = report(allowed: true, active: true);
-      await tester.pumpWidget(const SizedBox());
-      await tester.pumpAndSettle();
-      expect((calls.last.arguments as Map)['reason'], 'screen_closed');
-      await clean(tester, c);
-    },
-  );
+  testWidgets('pause and widget teardown leave active session to Android', (
+    tester,
+  ) async {
+    final c = AntTrainerSearchController(
+      channelName: 'openbkool/manual-ride-sim',
+    );
+    c.snapshot = report(allowed: true, active: true);
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(c.channel, (call) async {
+      calls.add(call);
+      return {...c.snapshot, 'running': false};
+    });
+    await show(tester, c);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pumpAndSettle();
+    expect(calls, isEmpty);
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+    expect(calls, isEmpty);
+    c.snapshot = report(allowed: true, active: true);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+    expect(calls, isEmpty);
+    await clean(tester, c);
+  });
   testWidgets(
     'low load requires consent, survives 30 seconds and cannot escalate profile',
     (tester) async {

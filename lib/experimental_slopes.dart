@@ -8,6 +8,7 @@ import 'ant_trainer_search.dart';
 import 'manual_control_status.dart';
 import 'slope_presentation.dart';
 import 'transmission_diagnostics.dart';
+import 'workout_summary.dart';
 
 /// Offline evidence, not a transport encoder or a firmware capability claim.
 class ExperimentalSlopeLevel {
@@ -41,32 +42,9 @@ class ExperimentalSlopesPage extends StatefulWidget {
   State<ExperimentalSlopesPage> createState() => _ExperimentalSlopesPageState();
 }
 
-class _ExperimentalSlopesPageState extends State<ExperimentalSlopesPage>
-    with WidgetsBindingObserver {
+class _ExperimentalSlopesPageState extends State<ExperimentalSlopesPage> {
   int _level = 1;
   double? _selected;
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if ((state == AppLifecycleState.paused ||
-            state == AppLifecycleState.detached) &&
-        widget.controller.running &&
-        !widget.controller.backgroundAuthorized) {
-      unawaited(widget.controller.stop(reason: 'app_background'));
-    }
-  }
-
   Future<void> _request(double percent, String? sessionId) async {
     // Native mode and per-session consent remain authoritative.
     if ((percent != 0 && !experimentalSlopeLevels[_level].physicalEnabled) ||
@@ -247,6 +225,7 @@ class _ExperimentalSlopesPageState extends State<ExperimentalSlopesPage>
           body: ListView(
             padding: const EdgeInsets.all(16),
             children: [
+              ...trainingAvailability(report),
               const Text(
                 'Pruebas aisladas de +2 % o +3 %: doble confirmación, una única solicitud del nivel y máximo 30 s. +4 % y control continuo bloqueados.',
               ),

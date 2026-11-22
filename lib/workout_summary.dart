@@ -244,6 +244,15 @@ List<Widget> trainingAvailability(Map<String, Object?> report) {
             ? 'Sesión activa en segundo plano'
             : 'Sesión en segundo plano habilitada · DETENER en la notificación',
       )
+    else if (report['backgroundBlockReason'] case final String reason)
+      Text(
+        'Mantén OpenBkool visible. Bloquear la pantalla o cambiar de app detendrá la sesión. ${switch (reason) {
+          'notification_permission_denied' || 'notifications_disabled' => 'Permite las notificaciones de OpenBkool en Ajustes.',
+          'notification_channel_disabled' => 'Activa el canal Entrenamientos ANT en Ajustes.',
+          'connected_device_permission_denied' => 'Permite Dispositivos cercanos en Ajustes.',
+          _ => 'El servicio de entrenamiento no está activo.',
+        }}',
+      )
     else
       const Text('Sesión solo en primer plano'),
   ];
