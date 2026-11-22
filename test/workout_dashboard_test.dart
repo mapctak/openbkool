@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openbkool/ant_trainer_search.dart';
 import 'package:openbkool/trainer_session.dart';
+import 'package:openbkool/main.dart';
 import 'package:openbkool/training.dart';
 import 'package:openbkool/workout_dashboard.dart';
 
@@ -19,7 +20,47 @@ class DashboardController extends AntTrainerSearchController {
 }
 
 void main() {
-  for (final screen in [const Size(412, 820), const Size(820, 412)]) {
+  testWidgets(
+    'profile marks the last valid point on the right and joins uncertain segments',
+    (tester) async {
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: RepaintBoundary(
+              key: key,
+              child: const SizedBox(
+                width: 300,
+                child: ElevationChart(
+                  height: 128,
+                  distanceMeters: 150,
+                  points: [
+                    [0, 0, 0],
+                    [25, 0, 0],
+                    [50, 0, 1],
+                    [100, 0, 1],
+                    [90, 9, 2],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.runAsync(() async {
+        final render =
+            key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+        final image = await render.toImage();
+        final data = (await image.toByteData())!;
+        int green(int x) => data.getUint8((58 * image.width + x) * 4 + 1);
+        expect(green(284), greaterThan(180));
+        expect(green(100), greaterThan(green(103)));
+        image.dispose();
+      });
+    },
+  );
+
+  for (final screen in [const Size(360, 800), const Size(800, 360)]) {
     testWidgets(
       'dashboard fits ${screen.width} × ${screen.height} and keeps the native profile',
       (tester) async {
@@ -36,10 +77,10 @@ void main() {
           [3550, 37, 0],
           [4100, 23, 0],
           [5000, 67, 0],
-          [5800, 54, 0],
-          [6750, 72, 0],
-          [7450, 48, 0],
-          [8420, 56, 0],
+          [5800, 54, 1],
+          [6750, 72, 1],
+          [7450, 48, 1],
+          [8420, 56, 1],
         ];
         final telemetry = {
           'signal': 'receiving',
@@ -51,6 +92,7 @@ void main() {
         };
         final report = <String, Object?>{
           'sessionId': 'preview',
+          'trainingElapsedMs': 1496000,
           'running': true,
           'status': 'running',
           'trainingServiceActive': true,
@@ -91,6 +133,15 @@ void main() {
         await tester.pumpWidget(page(const ValueKey(1)));
         await tester.pumpAndSettle();
         expect(find.byType(WorkoutDial), findsNWidgets(3));
+        expect(
+          tester.getSize(find.byType(ElevationChart)).height,
+          lessThan(175),
+        );
+        expect(
+          tester.getSize(find.byType(FilledButton)).height,
+          greaterThanOrEqualTo(48),
+        );
+
         expect(find.text('31,4'), findsOneWidget);
         expect(find.text('214'), findsOneWidget);
         expect(find.text('88'), findsOneWidget);
@@ -106,17 +157,21 @@ void main() {
           profile,
         );
         expect(tester.takeException(), isNull);
-        if (preview != null) {
+        Future<void> capture(String name) async {
           await tester.runAsync(() async {
             final render =
                 boundary.currentContext!.findRenderObject()!
                     as RenderRepaintBoundary;
             final image = await render.toImage(pixelRatio: 2);
             final png = await image.toByteData(format: ui.ImageByteFormat.png);
-            await File('$preview/dashboard-${screen.width.toInt()}.png')
+            await File('$preview/$name.png')
                 .writeAsBytes(png!.buffer.asUint8List());
             image.dispose();
           });
+        }
+
+        if (preview != null) {
+          await capture('dashboard-${screen.width.toInt()}');
         }
         controller.replace({
           ...report,
@@ -146,6 +201,37 @@ void main() {
           ],
         );
         expect(tester.takeException(), isNull);
+        if (preview != null && screen.width < screen.height) {
+          controller.replace({
+            ...report,
+            'sessionId': 'warming',
+            'trainingElapsedMs': null,
+            'manualControl': {'eligible': false, 'enabled': false},
+          });
+          await tester.pumpAndSettle();
+          await capture('calentamiento-360');
+          controller.replace({'status': 'not_started', 'running': false});
+          final messenger =
+              TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+          messenger.setMockMethodCallHandler(
+            TrainerPreferences.channel,
+            (_) async => null,
+          );
+          addTearDown(
+            () => messenger.setMockMethodCallHandler(
+              TrainerPreferences.channel,
+              null,
+            ),
+          );
+          await tester.pumpWidget(
+            RepaintBoundary(
+              key: boundary,
+              child: OpenBkoolApp(session: session),
+            ),
+          );
+          await tester.pumpAndSettle();
+          await capture('inicio-360');
+        }
         await tester.pumpWidget(const SizedBox());
         session.dispose();
       },

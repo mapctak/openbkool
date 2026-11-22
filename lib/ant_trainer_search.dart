@@ -238,7 +238,7 @@ class AntTrainerSearchController extends ChangeNotifier {
       }
       await _listen();
       if (_disposed || running || generation != _manualGeneration) return;
-      final training = mode == 'training_connected';
+      final training = _nativeTrainingLifecycle;
       generation = ++_manualGeneration;
       _cancelDeferredSlope("new_session");
       _clientSlopeEvents.clear();
@@ -275,6 +275,7 @@ class AntTrainerSearchController extends ChangeNotifier {
           'selectedDevice': device,
           'csvFile': null,
         },
+        'mode': mode,
         'status': 'starting',
         'running': true,
         'clientError': null,
@@ -292,6 +293,7 @@ class AntTrainerSearchController extends ChangeNotifier {
       final cancelled = code == 'training_start_cancelled';
       snapshot = {
         ...snapshot,
+        'mode': mode,
         'status': cancelled ? 'user_finish' : 'start_error',
         'running': false,
         'clientError': cancelled ? null : error.toString(),

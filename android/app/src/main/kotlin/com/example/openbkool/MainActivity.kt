@@ -10,7 +10,7 @@ import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
     private var trainingEvents: EventChannel.StreamHandler? = null
-    private data class RequestedTraining(val device: Map<String, Any?>?, val reply: MethodChannel.Result)
+    private data class RequestedTraining(val device: Map<String, Any?>?, val reply: MethodChannel.Result, val checkOnly: Boolean)
     private var trainingPermissionRequest: RequestedTraining? = null
     private var antTrainerSearch: AntTrainerSearch? = null
     private var antDiagnostics: AntDiagnostics? = null
@@ -30,7 +30,8 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/training").setMethodCallHandler { call, result ->
             val session = TrainingService.controller()
             when (call.method) {
-                "start" -> startTraining(call.argument<Map<String, Any?>>("device"), result)
+                "start" -> startTraining(call.argument<Map<String, Any?>>("device"), result,
+                    checkOnly = call.argument<String>("mode") == "training_connection_check")
                 "stop" -> {
                     trainingPermissionRequest?.reply?.error("training_start_cancelled", "Entrenamiento sin iniciar", null)
                     trainingPermissionRequest = null
@@ -138,7 +139,7 @@ class MainActivity : FlutterActivity() {
         super.onStop()
     }
 
-    private fun startTraining(device: Map<String, Any?>?, result: MethodChannel.Result) {
+    private fun startTraining(device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean) {
         if (!visible) { result.error("training_not_visible", "Abre OpenBkool para iniciar el entrenamiento", null); return }
         if (trainingPermissionRequest != null) {
             result.error("permission_request_pending", "Ya hay una solicitud de permisos", null)
@@ -150,9 +151,9 @@ class MainActivity : FlutterActivity() {
             if (Build.VERSION.SDK_INT >= 34 && !status.nearbyGranted) add(Manifest.permission.BLUETOOTH_CONNECT)
         }
         if (missing.isEmpty()) {
-            TrainingService.start(this, device, result)
+            TrainingService.start(this, device, result, checkOnly)
         } else {
-            trainingPermissionRequest = RequestedTraining(device, result)
+            trainingPermissionRequest = RequestedTraining(device, result, checkOnly)
             try {
                 requestPermissions(missing.toTypedArray(), permissionRequestCode + 1)
             } catch (error: RuntimeException) {
@@ -180,7 +181,7 @@ class MainActivity : FlutterActivity() {
         if (requestCode == permissionRequestCode + 1) {
             val request = trainingPermissionRequest ?: return
             trainingPermissionRequest = null
-            if (visible) TrainingService.start(this, request.device, request.reply)
+            if (visible) TrainingService.start(this, request.device, request.reply, request.checkOnly)
             else request.reply.error("training_not_visible", "Abre OpenBkool para iniciar el entrenamiento", null)
             return
         }

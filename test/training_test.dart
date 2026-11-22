@@ -112,7 +112,7 @@ void main() {
       expect(c.running, isTrue);
       expect(c.snapshot['sessionId'], 'session');
       expect(calls, hasLength(2));
-      expect(find.text('ANT · Conectado'), findsOneWidget);
+      expect(canIncrease(), isTrue);
       nativeReport = {
         ...initial,
         'running': false,
@@ -139,7 +139,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(canIncrease(), isFalse);
       expect(c.snapshot['status'], 'user_finish');
-      expect(find.text('ANT · Desconectado'), findsOneWidget);
+      expect(find.text('TIEMPO DE ENTRENAMIENTO'), findsOneWidget);
       await tester.tap(find.byTooltip('Exportar entrenamiento'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar CSV'));

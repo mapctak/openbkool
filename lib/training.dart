@@ -83,6 +83,7 @@ class _TrainingPageState extends State<TrainingPage>
   }
 
   bool readyForControl(Map<String, Object?> report) =>
+      report['mode'] != 'training_connection_check' &&
       report['sessionId'] is String &&
       report['trainingServiceActive'] == true &&
       connectionFor(report, widget.session.selected) ==
@@ -121,7 +122,7 @@ class _TrainingPageState extends State<TrainingPage>
         announcedSession = id;
         showStart = true;
       });
-      startBanner = Timer(const Duration(seconds: 2), () {
+      startBanner = Timer(const Duration(seconds: 5), () {
         setState(() => showStart = false);
       });
     } else if (!c.commandBusy &&
@@ -266,7 +267,9 @@ class _TrainingPageState extends State<TrainingPage>
       final error = starting && !c.running ? null : connectionError(report);
       final active = available && isActive(report);
       final activationFailed =
-          available && !active && activationAttempt == id && !c.commandBusy;
+          available &&
+          !active &&
+          (manual['lastResult'] as Map?)?['event'] == 'activation_rejected';
       final warmingUp =
           !cancelled &&
           !active &&
@@ -281,7 +284,6 @@ class _TrainingPageState extends State<TrainingPage>
           : 0.0;
       final trainingElapsed = report['trainingElapsedMs'] as num?;
       final elapsed = trainingElapsed ?? (telemetry['elapsedMs'] as num? ?? 0);
-      final connection = widget.session.connection;
       final controls = Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -290,11 +292,26 @@ class _TrainingPageState extends State<TrainingPage>
             onPressed: usable && selected > trainingSlopes.first
                 ? () => request(selected - 0.5, rapid: true)
                 : null,
-            icon: const Text('−', style: TextStyle(fontSize: 26)),
-            style: IconButton.styleFrom(minimumSize: const Size(48, 48)),
+            icon: const Icon(Icons.remove, size: 26),
+            style:
+                IconButton.styleFrom(
+                  minimumSize: const Size(48, 48),
+                  foregroundColor: dashboardAccent,
+                  disabledForegroundColor: const Color(0xff75878a),
+                  backgroundColor: const Color(0xff163b34),
+                  disabledBackgroundColor: const Color(0xff252e31),
+                ).copyWith(
+                  side: WidgetStateProperty.resolveWith(
+                    (states) => BorderSide(
+                      color: states.contains(WidgetState.disabled)
+                          ? const Color(0xff384446)
+                          : dashboardAccent,
+                    ),
+                  ),
+                ),
           ),
           SizedBox(
-            width: 106,
+            width: 66,
             child: Center(
               child: FittedBox(
                 fit: BoxFit.scaleDown,
@@ -316,8 +333,23 @@ class _TrainingPageState extends State<TrainingPage>
             onPressed: usable && selected < trainingSlopes.last
                 ? () => request(selected + 0.5, rapid: true)
                 : null,
-            icon: const Text('+', style: TextStyle(fontSize: 26)),
-            style: IconButton.styleFrom(minimumSize: const Size(48, 48)),
+            icon: const Icon(Icons.add, size: 26),
+            style:
+                IconButton.styleFrom(
+                  minimumSize: const Size(48, 48),
+                  foregroundColor: dashboardAccent,
+                  disabledForegroundColor: const Color(0xff75878a),
+                  backgroundColor: const Color(0xff163b34),
+                  disabledBackgroundColor: const Color(0xff252e31),
+                ).copyWith(
+                  side: WidgetStateProperty.resolveWith(
+                    (states) => BorderSide(
+                      color: states.contains(WidgetState.disabled)
+                          ? const Color(0xff384446)
+                          : dashboardAccent,
+                    ),
+                  ),
+                ),
           ),
         ],
       );
@@ -436,26 +468,32 @@ class _TrainingPageState extends State<TrainingPage>
             ),
             bottomNavigationBar: SafeArea(
               minimum: const EdgeInsets.fromLTRB(16, 6, 16, 12),
-              child: FilledButton.icon(
-                onPressed:
-                    (c.running || (starting && !cancelled)) && !c.manualStopping
-                    ? stop
-                    : null,
-                icon: const Icon(Icons.stop_rounded),
-                label: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text(
-                    c.manualStopping ? 'DETENIENDO…' : 'DETENER ENTRENAMIENTO',
+              child: Center(
+                heightFactor: 1,
+                child: FilledButton.icon(
+                  onPressed:
+                      (c.running || (starting && !cancelled)) &&
+                          !c.manualStopping
+                      ? stop
+                      : null,
+                  icon: const Icon(Icons.stop_rounded),
+                  label: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      c.manualStopping
+                          ? 'DETENIENDO…'
+                          : 'DETENER ENTRENAMIENTO',
+                    ),
                   ),
-                ),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size.fromHeight(52),
-                  backgroundColor: const Color(0xffff7169),
-                  foregroundColor: const Color(0xff2c1012),
-                  textStyle: const TextStyle(
-                    fontFamily: 'Roboto',
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: .7,
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size(0, 48),
+                    backgroundColor: const Color(0xff653337),
+                    foregroundColor: const Color(0xffffe2e1),
+                    textStyle: const TextStyle(
+                      fontFamily: 'Roboto',
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: .7,
+                    ),
                   ),
                 ),
               ),
@@ -466,70 +504,72 @@ class _TrainingPageState extends State<TrainingPage>
                 builder: (context, constraints) => ListView(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
                   children: [
-                    Row(
-                      children: [
-                        Icon(
-                          Icons.sensors_rounded,
-                          color: connection == TrainerConnection.connected
-                              ? dashboardAccent
-                              : dashboardMuted,
-                          size: 16,
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            warmingUp
-                                ? 'CALENTAMIENTO'
-                                : 'ANT · ${connectionLabel(connection)}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: dashboardMuted,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      alignment: WrapAlignment.spaceBetween,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: 12,
-                      runSpacing: 8,
-                      children: [
-                        Column(
+                    Builder(
+                      builder: (context) {
+                        final phase = active && showStart
+                            ? '¡COMIENZA EL ENTRENAMIENTO!'
+                            : warmingUp
+                            ? 'CALENTAMIENTO'
+                            : 'TIEMPO DE ENTRENAMIENTO';
+                        final clock = Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            label(
-                              trainingElapsed == null
-                                  ? 'TIEMPO DE CALENTAMIENTO'
-                                  : 'TIEMPO DE ENTRENAMIENTO',
+                            SizedBox(
+                              height: 30,
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: Semantics(
+                                  liveRegion: true,
+                                  child: Text(
+                                    phase,
+                                    key: const ValueKey('trainingPhase'),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      color: active && showStart
+                                          ? dashboardAccent
+                                          : dashboardMuted,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: .65,
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
-                            Text(
-                              workoutTime(elapsed),
-                              style: const TextStyle(
-                                fontSize: 32,
-                                height: 1.2,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                                fontFeatures: [FontFeature.tabularFigures()],
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                workoutTime(elapsed),
+                                style: const TextStyle(
+                                  fontSize: 32,
+                                  height: 1.2,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                  fontFeatures: [FontFeature.tabularFigures()],
+                                ),
                               ),
                             ),
                           ],
-                        ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
+                        );
+                        final slope = Column(
                           children: [label('PENDIENTE'), controls],
-                        ),
-                      ],
+                        );
+                        return constraints.maxWidth >= 320
+                            ? Row(
+                                children: [
+                                  Expanded(child: clock),
+                                  const SizedBox(width: 8),
+                                  slope,
+                                ],
+                              )
+                            : Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [clock, slope],
+                              );
+                      },
                     ),
-                    if (active && showStart)
-                      Semantics(
-                        liveRegion: true,
-                        child: const Text(
-                          '¡COMIENZA EL ENTRENAMIENTO!',
-                          style: TextStyle(color: dashboardAccent),
-                        ),
-                      ),
                     if (activationFailed ||
                         (c.running && c.controlTransportUncertain))
                       const Text('No se pudo activar el control.'),
@@ -554,7 +594,7 @@ class _TrainingPageState extends State<TrainingPage>
                               children: [
                                 ConstrainedBox(
                                   constraints: const BoxConstraints(
-                                    maxWidth: 345,
+                                    maxWidth: 330,
                                   ),
                                   child: instruments,
                                 ),
@@ -566,7 +606,7 @@ class _TrainingPageState extends State<TrainingPage>
                           const SizedBox(width: 18),
                           Expanded(
                             child: profile(
-                              (constraints.maxHeight - 150).clamp(108.0, 240.0),
+                              (constraints.maxHeight - 123).clamp(104.0, 152.0),
                             ),
                           ),
                         ],
@@ -577,7 +617,7 @@ class _TrainingPageState extends State<TrainingPage>
                       distanceView(label, distance != null, meters),
                       const SizedBox(height: 14),
                       profile(
-                        (constraints.maxHeight - 310).clamp(146.0, 340.0),
+                        (constraints.maxHeight * .24).clamp(112.0, 172.0),
                       ),
                     ],
                   ],

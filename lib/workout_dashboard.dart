@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -228,7 +230,8 @@ class ElevationChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Semantics(
-    label: 'Perfil de elevación virtual, distancia en kilómetros y elevación en metros',
+    label:
+        'Perfil de elevación virtual, distancia y elevación virtual en metros',
     child: RepaintBoundary(
       child: CustomPaint(
         painter: _ElevationPainter(points, distanceMeters),
@@ -260,14 +263,17 @@ class _ElevationPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final area = Rect.fromLTRB(37, 13, size.width - 16, size.height - 24);
     if (area.isEmpty) return;
-    final series = points
-        .whereType<List>()
-        .where(
-          (point) =>
-              point.length == 3 &&
-              point.every((value) => value is num && value.isFinite),
-        )
-        .toList();
+    final series = <List>[];
+    for (final point in points) {
+      if (point is! List ||
+          point.length != 3 ||
+          !point.every((value) => value is num && value.isFinite) ||
+          (point[0] as num) < 0 ||
+          (series.isNotEmpty && (point[0] as num) <= (series.last[0] as num))) {
+        continue;
+      }
+      series.add(point);
+    }
     var minY = 0.0;
     var maxY = 0.0;
     for (final point in series) {
@@ -279,12 +285,11 @@ class _ElevationPainter extends CustomPainter {
     final yStep = _step(math.max(1, (maxY - minY + padding * 2) / 3));
     final bottom = ((minY - padding) / yStep).floor() * yStep;
     final top = ((maxY + padding) / yStep).ceil() * yStep;
-    final xStep = _step(math.max(.1, distanceMeters * 1.06 / 4000));
-    final right = math.max(
-      xStep * 2,
-      (distanceMeters * 1.06 / 1000 / xStep).ceil() * xStep,
-    );
-    double x(double km) => area.left + area.width * km / right;
+    final current = series.isEmpty ? 0.0 : (series.last[0] as num).toDouble();
+    double x(double meters) => area.left + area.width * meters / current;
+    String distanceLabel(double meters) => current < 1000
+        ? '${dashboardDecimal(meters, current < 10 && meters != meters.round() ? 1 : 0)} m'
+        : '${dashboardDecimal(meters / 1000, 2).replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r',$'), '')} km';
     double y(double meters) =>
         area.bottom - area.height * (meters - bottom) / (top - bottom);
     final grid = Paint()
@@ -303,50 +308,58 @@ class _ElevationPainter extends CustomPainter {
         right: true,
       );
     }
-    for (var tick = 0.0; tick <= right + xStep / 100; tick += xStep) {
-      canvas.drawLine(
-        Offset(x(tick), area.top),
-        Offset(x(tick), area.bottom),
-        grid,
-      );
+    final divisions = area.width < 160 ? 2 : 3;
+    for (var i = 0; i <= (current > 0 ? divisions : 0); i++) {
+      final tick = current * i / divisions;
+      final px = current > 0 ? x(tick) : area.left;
+      canvas.drawLine(Offset(px, area.top), Offset(px, area.bottom), grid);
       _caption(
         canvas,
-        '${dashboardDecimal(tick, xStep < 1 ? 1 : 0)} km',
-        Offset(x(tick), area.bottom + 6),
-        right: tick > right - xStep / 2,
+        distanceLabel(tick),
+        Offset(px, area.bottom + 5),
+        right: i == divisions,
       );
     }
     final line = Path();
     final fill = Path();
+    final uncertain = Path();
+    Offset? previous;
     num? segment;
-    double? lastX;
-    double? lastY;
     for (final point in series) {
-      final px = x((point[0] as num) / 1000);
+      final px = current > 0 ? x((point[0] as num).toDouble()) : area.left;
       final py = y((point[1] as num).toDouble());
+      final next = Offset(px, py);
       final nextSegment = point[2] as num;
-      if (nextSegment != segment) {
-        if (lastX != null) {
-          fill.lineTo(lastX, area.bottom);
+      if (previous == null || segment != nextSegment) {
+        if (previous != null) {
+          fill.lineTo(previous.dx, area.bottom);
           fill.close();
+          final delta = next - previous;
+          for (var d = 0.0; d < delta.distance; d += 6) {
+            final start = previous + delta * (d / delta.distance);
+            final end =
+                previous +
+                delta * (math.min(d + 3, delta.distance) / delta.distance);
+            uncertain.moveTo(start.dx, start.dy);
+            uncertain.lineTo(end.dx, end.dy);
+          }
         }
         line.moveTo(px, py);
         fill.moveTo(px, area.bottom);
         fill.lineTo(px, py);
-        segment = nextSegment;
       } else {
         line.lineTo(px, py);
         fill.lineTo(px, py);
       }
-      lastX = px;
-      lastY = py;
+      previous = next;
+      segment = nextSegment;
     }
-    if (lastX != null) {
-      fill.lineTo(lastX, area.bottom);
+    if (previous != null) {
+      fill.lineTo(previous.dx, area.bottom);
       fill.close();
     }
     canvas.save();
-    canvas.clipRect(area.inflate(1));
+    canvas.clipRect(area.inflate(3));
     canvas.drawPath(
       fill,
       Paint()
@@ -364,18 +377,20 @@ class _ElevationPainter extends CustomPainter {
         ..strokeWidth = 2
         ..strokeJoin = StrokeJoin.round,
     );
-    if (lastX != null && lastY != null) {
-      canvas.drawCircle(
-        Offset(lastX, lastY),
-        3,
-        Paint()..color = dashboardAccent,
-      );
+    canvas.drawPath(
+      uncertain,
+      Paint()
+        ..color = dashboardAccent.withValues(alpha: .58)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+    if (previous != null) {
+      canvas.drawCircle(previous, 3, Paint()..color = dashboardAccent);
     }
     canvas.restore();
   }
 
   @override
   bool shouldRepaint(covariant _ElevationPainter old) =>
-      distanceMeters != old.distanceMeters ||
-      points.length != old.points.length;
+      distanceMeters != old.distanceMeters || !listEquals(points, old.points);
 }

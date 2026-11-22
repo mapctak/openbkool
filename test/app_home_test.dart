@@ -16,7 +16,12 @@ class FakeTraining extends AntTrainerSearchController {
   @override
   Future<void> start(String mode, {Map<String, Object?>? device}) async {
     starts.add({'mode': mode, 'device': device});
-    emit({'running': true, 'status': 'starting', 'selectedDevice': device});
+    emit({
+      'running': true,
+      'status': 'starting',
+      'selectedDevice': device,
+      'mode': mode,
+    });
   }
 
   void emit(Map<String, Object?> report) {
@@ -27,7 +32,7 @@ class FakeTraining extends AntTrainerSearchController {
   @override
   Future<void> stop({String reason = 'user_finish'}) async {
     stops++;
-    emit({...snapshot, 'running': false, 'status': 'stopped'});
+    emit({...snapshot, 'running': false, 'status': reason});
   }
 }
 
@@ -86,7 +91,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('ANT · Conectado'), findsOneWidget);
+      expect(find.text('TIEMPO DE ENTRENAMIENTO'), findsOneWidget);
       expect(find.text('Autorizar rango completo'), findsNothing);
       expect(find.text('DETENER ENTRENAMIENTO'), findsOneWidget);
       expect(calls, isEmpty);
@@ -117,10 +122,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Desconectado'), findsOneWidget);
-      expect(
-        find.text('Rodillo recordado. Aún no está conectado.'),
-        findsOneWidget,
-      );
+      expect(find.text('ANT · 123/112/6'), findsNothing);
       expect(training.starts, isEmpty);
       expect(find.text('ENTRENAMIENTO LIBRE'), findsOneWidget);
       expect(find.text('Control manual 1.4'), findsNothing);
@@ -147,7 +149,6 @@ void main() {
         'clientError': 'radio unavailable',
       });
       await tester.pumpAndSettle();
-      expect(find.text('ANT · Error de conexión'), findsOneWidget);
       expect(
         find.text(
           'No se pudo conectar. Revisa el rodillo, ANT y los permisos.',
@@ -166,6 +167,61 @@ void main() {
       session.dispose();
     },
   );
+  testWidgets(
+    'home checks the saved identity, remains on home and cancels cleanly',
+    (tester) async {
+      final training = FakeTraining();
+      final session = TrainerSession(training: training);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: OpenBkoolShell(
+            session: session,
+            advancedBuilder: (_, _) => const SizedBox(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Bkool Smart Pro v1'), findsOneWidget);
+      expect(find.text('Desconectado'), findsOneWidget);
+      expect(find.text('Pendiente manual y telemetría ANT'), findsNothing);
+      await tester.tap(find.text('Comprobar conexión'));
+      await tester.pumpAndSettle();
+      expect(training.starts.single, {
+        'mode': 'training_connection_check',
+        'device': SavedTrainer.known.device,
+      });
+      expect(find.text('Conectando'), findsOneWidget);
+      await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+      await tester.pumpAndSettle();
+      expect(training.starts, hasLength(1));
+      expect(find.text('CALENTAMIENTO'), findsNothing);
+      await tester.tap(find.text('Cancelar'));
+      await tester.pumpAndSettle();
+      expect(training.stops, 1);
+      expect(find.text('Comprobación cancelada.'), findsOneWidget);
+      await tester.tap(find.text('Comprobar conexión'));
+      await tester.pumpAndSettle();
+      training.emit({
+        'mode': 'training_connection_check',
+        'running': false,
+        'status': 'check_verified',
+        'resourcesReleased': true,
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('Desconectado'), findsOneWidget);
+      expect(
+        find.text('Rodillo verificado. Comprobación finalizada.'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+      await tester.pumpAndSettle();
+      expect(training.starts.last['mode'], 'training_connected');
+      expect(find.text('CALENTAMIENTO'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      session.dispose();
+    },
+  );
+
   testWidgets(
     'settings exposes intact advanced tools and preserves BLE page across visits',
     (tester) async {

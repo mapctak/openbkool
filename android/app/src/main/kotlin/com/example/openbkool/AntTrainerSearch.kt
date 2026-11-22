@@ -36,6 +36,14 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.RejectedExecutionException
 
+internal fun connectionCheckOutcome(link: ManualControlLink): String? {
+    if (!link.channelOpen || !link.radioAvailable || !link.sessionActive ||
+        !link.identityVerified || !link.activeIdentityMatches ||
+        link.signalAgeMs?.let { it in 0 until 3000 } != true ||
+        link.manufacturer == null || link.model == null) return null
+    return if (link.manufacturer == 67 && link.model == 22) "check_verified" else "check_wrong_model"
+}
+
 /** Diagnóstico RX y entrenamiento V1; control manual solo tras activación explícita por sesión. */
 class AntTrainerSearch(context: Context, private val training: Boolean = false, private val trainingOwner: TrainingService? = null) : EventChannel.StreamHandler {
     private val context = context.applicationContext
@@ -67,11 +75,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
 
     fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null,
         lifecycle: List<Map<String, Any?>> = emptyList(), screenOff: Boolean = false) {
-        if (mode !in (if (training) listOf("training_connected") else listOf("sequential", "fec", "bkool_v1"))) {
+        if (mode !in (if (training) listOf("training_connected", "training_connection_check") else listOf("sequential", "fec", "bkool_v1"))) {
             result.error("invalid_mode", "Protocolo no implementado", null); return
         }
         if (active != null) { result.error("ant_busy", "Espera a que finalice la búsqueda anterior", null); return }
-        if (mode == "training_connected" && selected == null) {
+        if (training && selected == null) {
             result.error("invalid_target", "Selecciona explícitamente un rodillo antes de conectar", null); return
         }
         val target = try {
@@ -112,6 +120,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         val requestedAt = android.os.SystemClock.elapsedRealtime()
         val session = active
         if (!training || session == null) { result.error("not_connected", "No hay entrenamiento activo", null); return }
+        if (session.checkOnly) { result.error("read_only_check", "Comprobación ANT sin control", null); return }
         if (session.id != sessionId) { result.error("stale_session", "La sesión ha cambiado; vuelve a conectar", null); return }
         if (!session.commandFence.tryEnqueue()) { result.error("command_busy", "Ya hay una orden en curso", null); return }
         val manualChange = method == "setManualSlope"
@@ -180,7 +189,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         @Volatile private var radioDead = false
         private val stopReplies = mutableListOf<MethodChannel.Result>()
         val waitingManualChanges = java.util.concurrent.atomic.AtomicInteger(0)
-        private val virtualElevation = if (training) VirtualElevation() else null
+        private val virtualElevation = if (training && mode == "training_connected") VirtualElevation() else null
         private val manualEvents = ArrayDeque<Map<String, Any?>>()
         private var droppedManualEvents = 0
         private var stopDrainUntilMs = 0L
@@ -221,7 +230,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 channelOpen = opened, radioAvailable = !radioDead, sessionActive = !finished,
                 activeIdentityMatches = channelIdentitiesMatch(target, configuredChannelId, adapterChannelId, receivedChannelId))
         }
-        private val dedicated = mode == "training_connected"
+        val checkOnly = mode == "training_connection_check"
+        private val dedicated = mode == "training_connected" || checkOnly
         private var identityVerified = false
         private var configuredChannelId: Map<String, Any?>? = null
         private var adapterChannelId: Map<String, Any?>? = null
@@ -390,7 +400,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         }
         fun begin(lifecycle: List<Map<String, Any?>>, screenOff: Boolean) {
             event("search_start", "Búsqueda $mode. Solo recepción e información; Bkool V2 desactivado.")
-            if (training) {
+            if (training && !checkOnly) {
                 try {
                     val file = java.io.File.createTempFile("training_", ".csv", context.filesDir)
                     csvFile = file.name; csv = file.bufferedWriter()
@@ -432,6 +442,12 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         }
         private fun publish() {
             if (active !== this && (!finished || latest["sessionId"] != id)) return
+            if (checkOnly && !stopping && !cancelled && !finished) {
+                connectionCheckOutcome(manualLink())?.let {
+                    finish(it)
+                    return
+                }
+            }
             val manualState = manual.snapshot() + mapOf("pendingCommands" to commandFence.snapshot()["pendingApplicationCommands"])
             if (training) identificationTiming.availability(manualState["eligible"] == true,
                 (manualState["blockingReasons"] as? List<*>)?.filterIsInstance<String>() ?: emptyList(), !finished && !stopping)
@@ -727,6 +743,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 event("v1_listening", "Escucha V1 activa; modo=$mode; destino=$target; control manual desactivado hasta habilitación explícita")
                 if (training) {
                     phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
+                    if (checkOnly) deadline(45) { finish("check_timeout") }
                     scheduleTrainingTick()
                 } else deadline(40) { advance() }
                 publish()

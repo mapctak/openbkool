@@ -43,6 +43,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
       await session.training.attachToTraining();
       if (mounted &&
           session.training.running &&
+          !session.checkRunning &&
           ModalRoute.of(context)?.isCurrent == true) {
         openTraining();
       }
@@ -137,100 +138,73 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
               child: ListView(
                 padding: const EdgeInsets.all(20),
                 children: [
-                  Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: Image.asset(
-                          'assets/icon/openbkool.png',
-                          width: 72,
-                          height: 72,
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Tu próximo entrenamiento',
-                              style: TextStyle(
-                                fontSize: 25,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            SizedBox(height: 4),
-                            Text('Conecta. Pedalea. Disfruta.'),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
                   Card(
                     child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 6,
+                      ),
+                      child: Row(
                         children: [
-                          const Text(
-                            'TU RODILLO',
-                            style: TextStyle(
-                              color: emerald,
-                              fontWeight: FontWeight.w700,
-                              letterSpacing: 1.5,
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  session.selected.name,
+                                  style: Theme.of(context).textTheme.titleSmall,
+                                ),
+                                const SizedBox(height: 4),
+                                ConnectionBadge(state: session.connection),
+                              ],
                             ),
                           ),
-                          const SizedBox(height: 12),
-                          Text(
-                            session.selected.name,
-                            style: Theme.of(context).textTheme.titleLarge,
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 156),
+                            child: TextButton(
+                              onPressed: session.checkRunning
+                                  ? (session.training.manualStopping
+                                        ? null
+                                        : session.training.stop)
+                                  : session.loading ||
+                                        session.locked ||
+                                        session.preferenceError != null
+                                  ? null
+                                  : () => session.connect(checkOnly: true),
+                              child: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Text(
+                                  session.checkRunning
+                                      ? 'Cancelar'
+                                      : 'Comprobar conexión',
+                                ),
+                              ),
+                            ),
                           ),
-                          Text('ANT · ${session.selected.id}'),
-                          const SizedBox(height: 12),
-                          ConnectionBadge(state: session.connection),
-                          if (session.connection ==
-                              TrainerConnection.disconnected)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 8),
-                              child: Text(
-                                'Rodillo recordado. Aún no está conectado.',
-                              ),
-                            ),
-                          if (session.connection == TrainerConnection.error)
-                            const Padding(
-                              padding: EdgeInsets.only(top: 8),
-                              child: Text(
-                                'No se pudo mantener la conexión. Puedes finalizar y volver a conectar o buscar el rodillo.',
-                              ),
-                            ),
                         ],
                       ),
                     ),
                   ),
+                  if (session.checkFeedback case final feedback?)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
+                      child: Semantics(liveRegion: true, child: Text(feedback)),
+                    ),
                   if (session.loading) const LinearProgressIndicator(),
                   if (session.preferenceError != null)
-                    Text(
-                      session.preferenceError!,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                      ),
-                    ),
-                  const SizedBox(height: 16),
+                    const Text('No se pudo leer el rodillo guardado.'),
+                  const SizedBox(height: 10),
                   Card(
                     child: ListTile(
-                      contentPadding: const EdgeInsets.all(20),
-                      leading: const Icon(Icons.bolt, color: emerald, size: 32),
+                      leading: const Icon(Icons.bolt, color: emerald),
                       title: const Text(
                         'ENTRENAMIENTO LIBRE',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 20,
-                        ),
+                        style: TextStyle(fontWeight: FontWeight.bold),
                       ),
-                      subtitle: const Text('Pendiente manual y telemetría ANT'),
                       trailing: const Icon(Icons.chevron_right),
-                      onTap: session.loading ? null : openTraining,
+                      onTap: session.loading || session.checkRunning
+                          ? null
+                          : openTraining,
                     ),
                   ),
                 ],
@@ -275,9 +249,11 @@ class ConnectionBadge extends StatelessWidget {
             color: color,
           ),
           const SizedBox(width: 8),
-          Text(
-            connectionLabel(state),
-            style: TextStyle(color: color, fontWeight: FontWeight.w600),
+          Flexible(
+            child: Text(
+              connectionLabel(state),
+              style: TextStyle(color: color, fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),

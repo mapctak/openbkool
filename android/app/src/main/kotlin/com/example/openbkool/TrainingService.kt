@@ -64,7 +64,7 @@ class TrainingService : Service() {
         startedAtMs = SystemClock.elapsedRealtime()
         current = this
         try {
-            val notice = notification(requestedToken)
+            val notice = notification(requestedToken, request?.checkOnly == true)
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIFICATION_ID, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             } else {
@@ -114,7 +114,7 @@ class TrainingService : Service() {
         val controller = AntTrainerSearch(applicationContext, training = true, trainingOwner = this)
         ant = controller
         clearPending()
-        controller.start("training_connected", request.result, request.device, listOf(
+        controller.start(if (request.checkOnly) "training_connection_check" else "training_connected", request.result, request.device, listOf(
             lifecycle("service_started") + mapOf("monotonicMs" to startedAtMs),
             lifecycle("foreground_promoted") + mapOf("promotionRequestedAtMs" to promotionRequestedAtMs),
             lifecycle("notification_active") + prerequisites.toMap(),
@@ -185,7 +185,7 @@ class TrainingService : Service() {
         }
     }
 
-    private fun notification(token: String): Notification {
+    private fun notification(token: String, checkOnly: Boolean): Notification {
         val open = PendingIntent.getActivity(this, 0,
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -195,7 +195,7 @@ class TrainingService : Service() {
             else @Suppress("DEPRECATION") Notification.Builder(this)
         if (Build.VERSION.SDK_INT >= 31) builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         return builder.setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle("OpenBkool — Entrenamiento libre activo")
+            .setContentTitle(if (checkOnly) "OpenBkool — Comprobando conexión" else "OpenBkool — Entrenamiento libre activo")
             .setContentText("Sesión ANT · DETENER para finalizar")
             .setContentIntent(open)
             .setOngoing(true)
@@ -239,7 +239,7 @@ class TrainingService : Service() {
         private const val STOP = "com.example.openbkool.STOP_TRAINING"
         private val main = Handler(Looper.getMainLooper())
 
-        private data class StartRequest(val token: String, val device: Map<String, Any?>?, val result: MethodChannel.Result)
+        private data class StartRequest(val token: String, val device: Map<String, Any?>?, val result: MethodChannel.Result, val checkOnly: Boolean)
         private var pending: StartRequest? = null
         private val startTimeout = Runnable { cancelStart("training_service_timeout") }
         private var current: TrainingService? = null
@@ -280,7 +280,7 @@ class TrainingService : Service() {
             }
         }
 
-        internal fun start(context: Context, device: Map<String, Any?>?, result: MethodChannel.Result) {
+        internal fun start(context: Context, device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean) {
             if (!TrainingServicePolicy.canStart(pending != null, current != null, lastController?.hasActiveSession() == true)) {
                 result.error("ant_busy", "Ya hay un entrenamiento en curso o cerrándose", null)
                 return
@@ -294,7 +294,7 @@ class TrainingService : Service() {
                 result.error("training_service_blocked", blocker, null)
                 return
             }
-            val request = StartRequest(java.util.UUID.randomUUID().toString(), device, result)
+            val request = StartRequest(java.util.UUID.randomUUID().toString(), device, result, checkOnly)
             pending = request
             try {
                 val intent = serviceIntent(context, START, request.token)

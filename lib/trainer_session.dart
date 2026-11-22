@@ -111,6 +111,8 @@ TrainerConnection connectionFor(Map<String, Object?> r, SavedTrainer selected) {
         'disconnected',
         'channel_death',
         'channel_closed',
+        'check_wrong_model',
+        'check_timeout',
         'radio_search_timeout',
         'radio_service_disconnected',
         'training_service_destroyed',
@@ -148,6 +150,28 @@ class TrainerSession extends ChangeNotifier {
   SavedTrainer selected = SavedTrainer.known;
   bool loading = true, saving = false, _disposed = false;
   bool _connecting = false;
+  bool _startingCheck = false;
+  bool get checkRunning =>
+      _startingCheck ||
+      (training.running &&
+          training.snapshot['mode'] == 'training_connection_check');
+
+  String? get checkFeedback {
+    final report = training.snapshot;
+    if (checkRunning || report['mode'] != 'training_connection_check') {
+      return null;
+    }
+    if (report['status'] == 'check_verified' &&
+        report['resourcesReleased'] == true) {
+      return 'Rodillo verificado. Comprobación finalizada.';
+    }
+    return switch (report['status']) {
+      'user_finish' => 'Comprobación cancelada.',
+      'check_wrong_model' => 'El rodillo no coincide con el Smart Pro v1.',
+      _ => 'No se pudo verificar el rodillo. Revisa ANT y los permisos.',
+    };
+  }
+
   String? preferenceError;
   int _selectionRevision = 0;
   TrainerConnection get connection => _connecting && !training.running
@@ -196,14 +220,19 @@ class TrainerSession extends ChangeNotifier {
     }
   }
 
-  Future<void> connect() async {
+  Future<void> connect({bool checkOnly = false}) async {
     if (loading || locked) return;
     _connecting = true;
+    _startingCheck = checkOnly;
     _notify();
     try {
-      await training.start('training_connected', device: selected.device);
+      await training.start(
+        checkOnly ? 'training_connection_check' : 'training_connected',
+        device: selected.device,
+      );
     } finally {
       _connecting = false;
+      _startingCheck = false;
       _notify();
     }
   }
