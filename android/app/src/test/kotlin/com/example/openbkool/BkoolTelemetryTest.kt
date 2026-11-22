@@ -101,6 +101,55 @@ class BkoolTelemetryTest {
         t.receive(frame("10 19 00 01 86 0D FF 3C"), 2000)
         assertEquals(1L, t.snapshot(2000)["distanceM"])
     }
+    @Test fun prolongedSessionsSuspendControlWithoutStoppingTelemetryAndDetectTotalLoss() {
+        for (minutes in listOf(30, 60)) {
+            val telemetry = BkoolTelemetry(0)
+            val target = AntTrainerIdentity(30064, 112, 5)
+            var now = 0L
+            val writes = mutableListOf<Boolean>()
+            val control = ManualAntControl(target, { now }, {
+                val state = telemetry.snapshot(now)
+                ManualControlLink(true, true, 67, 22, state["signalAgeMs"] as Long?,
+                    state["powerW"] != null && state["cadenceRpm"] != null && state["speedKmh"] != null)
+            }, { _, stop -> writes.add(stop) }, {})
+            for (second in 0..minutes * 60) {
+                now = second * 1000L
+                telemetry.receive(frame("10 19 98 65 86 0D FF 3C"), now)
+                if (second % 2 == 0) telemetry.receive(frame("11 FF FF FF 52 4E 00 34"), now)
+                if (second % 3 == 0) telemetry.receive(frame("54 FF FF FF FF FF FF FF"), now)
+                if (second !in 810..825 && second !in 1050..1063) {
+                    telemetry.receive(frame("19 BF 17 D2 05 1D 40 36"), now)
+                }
+                if (second == 0) {
+                    assertEquals("enabled", control.enable(true, "manual_session", true, "original")["event"])
+                    control.request(0.5)
+                }
+                if (control.abortReason() == "link_lost:telemetry_not_fresh") {
+                    assertTrue(control.suspendForMissingTelemetry())
+                }
+                control.refreshTarget()
+                assertEquals("receiving", telemetry.signal(now))
+                if (second == 821 || second == 1062) {
+                    val snapshot = telemetry.snapshot(now)
+                    assertEquals(true, snapshot["partial"])
+                    assertNull(snapshot["powerW"])
+                    assertNotNull(snapshot["speedKmh"])
+                    assertEquals("suspended", control.snapshot()["state"])
+                }
+                if (second == 826 || second == 1064) {
+                    assertEquals(29, telemetry.snapshot(now)["powerW"])
+                    assertEquals(false, control.snapshot()["enabled"])
+                }
+            }
+            assertEquals(1, writes.count { it })
+            assertTrue(writes.last())
+            assertEquals("signal_lost", telemetry.signal(now + 5000))
+            assertEquals("disconnected", telemetry.signal(now + 15000))
+            assertFalse(control.stop("disconnected", allowZero = false))
+            assertEquals(1, writes.count { it })
+        }
+    }
+
     @Test fun csvEscapesAndUsesDecimalPoint() {
         assertEquals("1.5,\"a,b\",\"a\"\"b\",\r\n", csvRow(listOf(1.5, "a,b", "a\"b", null)))
     }

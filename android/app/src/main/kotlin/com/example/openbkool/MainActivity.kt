@@ -13,6 +13,9 @@ class MainActivity : FlutterActivity() {
     private var antTrainerSearch: AntTrainerSearch? = null
     private var antDiagnostics: AntDiagnostics? = null
     private val permissionRequestCode = 4818
+    private data class TrainingStart(val mode: String, val device: Map<String, Any?>?, val result: MethodChannel.Result)
+    private var notificationStart: TrainingStart? = null
+    private var askedForBackgroundPermissions = false
     private var permissionResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -22,16 +25,14 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler(preferences::handle)
         antDiagnostics = AntDiagnostics(this)
         antTrainerSearch = AntTrainerSearch(this)
-        training = AntTrainerSearch(this, training = true) { running ->
-            if (running) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
+        training = TrainingService.controller(applicationContext)
         EventChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/training/events").setStreamHandler(training)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/training").setMethodCallHandler { call, result ->
             val session = training
             if (session == null) result.error("not_ready", "Entrenamiento no inicializado", null)
             else when (call.method) {
-                "start" -> session.start(call.argument<String>("mode") ?: "training", result, call.argument<Map<String, Any?>>("device"))
+                "start" -> startTraining(call.argument<String>("mode") ?: "training",
+                    call.argument<Map<String, Any?>>("device"), result)
                 "prepareSlope" -> {
                     val percent = call.argument<Number>("percent")
                     if (percent == null) result.error("invalid_grade", "Pendiente numérica requerida", null)
@@ -39,11 +40,17 @@ class MainActivity : FlutterActivity() {
                 }
                 "enableManualTest", "setManualSlope", "stopManualTest" -> session.manualAction(call.method,
                     call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
-                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true, call.argument<String>("rangeProfile"))
+                    call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("controlMode") ?: "trial_30s", call.argument<Boolean>("experimentalConfirmed") == true, call.argument<String>("rangeProfile"), call.argument<String>("requestedAtUtc"))
                 "stop" -> {
                     val requested = call.argument<String>("reason")
                     val reason = requested?.takeIf { it in setOf("screen_closed", "app_background", "controller_disposed", "user_finish") } ?: "stopped"
-                    session.stop(result, reason)
+                    if (reason == "app_background" && TrainingService.backgroundAuthorized) {
+                        result.success(session.snapshot())
+                    } else {
+                        cancelNotificationStart(reason)
+                        TrainingService.cancelPending(reason)
+                        session.stop(result, reason)
+                    }
                 }
                 "snapshot" -> result.success(session.snapshot())
                 "exportCsv" -> session.exportCsv(result)
@@ -105,7 +112,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
-        training?.dispose()
+        cancelNotificationStart("engine_disposed")
+        training?.detachEvents()
         training = null
         antTrainerSearch?.dispose()
         antTrainerSearch = null
@@ -114,10 +122,49 @@ class MainActivity : FlutterActivity() {
         super.cleanUpFlutterEngine(flutterEngine)
     }
 
+    override fun onStart() {
+        super.onStart()
+        TrainingService.setVisible(true)
+    }
+
     override fun onStop() {
-        training?.stop(reason = "app_background")
+        cancelNotificationStart("app_background")
+        TrainingService.setVisible(false)
         antTrainerSearch?.stop(reason = "app_background")
         super.onStop()
+    }
+
+    private fun startTraining(mode: String, device: Map<String, Any?>?, result: MethodChannel.Result) {
+        if (notificationStart != null) {
+            result.error("permission_request_pending", "Ya hay una solicitud de permisos", null)
+            return
+        }
+        val missing = buildList {
+            if (Build.VERSION.SDK_INT >= 31 &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
+            if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        if (missing.isNotEmpty() && !askedForBackgroundPermissions) {
+            askedForBackgroundPermissions = true
+            notificationStart = TrainingStart(mode, device, result)
+            try {
+                requestPermissions(missing.toTypedArray(), permissionRequestCode + 1)
+            } catch (error: RuntimeException) {
+                cancelNotificationStart(error.message ?: "permission_request_failed")
+            }
+        } else TrainingService.start(this, mode, device, result)
+    }
+
+    private fun cancelNotificationStart(reason: String) {
+        val request = notificationStart ?: return
+        notificationStart = null
+        request.result.error("training_start_cancelled", reason, null)
     }
 
     private fun scanPermissions(): List<String> = buildList {
@@ -135,6 +182,12 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == permissionRequestCode + 1) {
+            val request = notificationStart ?: return
+            notificationStart = null
+            TrainingService.start(this, request.mode, request.device, request.result)
+            return
+        }
         if (requestCode != permissionRequestCode) return
         val result = permissionResult ?: return
         permissionResult = null

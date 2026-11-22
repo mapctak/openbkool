@@ -9,6 +9,7 @@ import 'trainer_session.dart';
 import 'training.dart';
 import 'spinning.dart';
 import 'manual_ride.dart';
+import 'workout_summary.dart';
 
 const emerald = Color(0xFF008F70);
 typedef AdvancedBuilder = Widget Function(
@@ -35,6 +36,9 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
   void initState() {
     super.initState();
     unawaited(session.restore());
+    if (widget.session == null) {
+      unawaited(session.training.attachToTraining().catchError((Object _) {}));
+    }
   }
 
   @override
@@ -190,6 +194,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                           Text('ANT · ${session.selected.id}'),
                           const SizedBox(height: 12),
                           ConnectionBadge(state: session.connection),
+                          ...trainingAvailability(session.training.snapshot),
                           if (session.connection ==
                               TrainerConnection.disconnected)
                             const Padding(
@@ -223,7 +228,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                           ),
                           if (session.training.running)
                             TextButton(
-                              onPressed: session.training.commandBusy
+                              onPressed: session.training.manualStopping
                                   ? null
                                   : session.training.stop,
                               child: const Text('Desconectar rodillo'),

@@ -10,6 +10,7 @@ internal object ManualControlPolicy {
     const val FULL_MIN_PERCENT = -5.0
     const val FULL_MAX_PERCENT = 15.0
     const val REFRESH_MS = 5000L
+    const val MIN_COMMAND_MS = 1000L
     const val REFRESH_TRIAL_PHYSICAL_ENABLED = true
     const val LOW_LOAD_PHYSICAL_ENABLED = true
     const val MAX_PERCENT = 1.0
@@ -99,15 +100,19 @@ internal class ManualAntControl(
     private val emit: (Map<String, Any?>) -> Unit,
     private val continuousAllowed: Boolean = ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED,
     private val manualSessionAllowed: Boolean = ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED,
+    private val manualPriorityWaiting: () -> Boolean = { false },
     private val describeError: (Exception) -> Map<String, Any?> = { mapOf("type" to it.javaClass.name, "message" to it.message) },
 ) {
     companion object { const val MAX_TEST_MS = ManualControlPolicy.MAX_DURATION_MS; const val DRAIN_MS = 1500L }
     private data class StopIntent(val reason: String, val requestedAtMs: Long)
     private val stopIntent = AtomicReference<StopIntent?>(null)
+    private data class Desired(val percent: Double, val bytes: ByteArray, val id: Int, val requestedAt: Long, val requestedAtUtc: String?)
+    private var pendingDesired: Desired? = null
+    private var acceptedDesired: Desired? = null
+    private var lastAcceptedAt: Long? = null
     private var refreshGoal: Double? = null
     private var targetRevision = 0L
     private var commandSequence = 0L
-    private var currentApiFields: Map<String, Any?>? = null
     private var apiEnteredAtMs: Long? = null
     /** Safe from UI/SDK threads. Never waits for the serial worker or ANT IPC. */
     fun invalidateTargets(reason: String) { stopIntent.compareAndSet(null, StopIntent(reason, clock())) }
@@ -115,7 +120,12 @@ internal class ManualAntControl(
     /** Called on the serial worker immediately before the actual SDK call, never on TX. */
     fun recordApiEntry() {
         apiEnteredAtMs = clock()
-        event("ant_api_entered", checkNotNull(currentApiFields) + mapOf("apiEnteredAtMs" to apiEnteredAtMs), result = false)
+        lastAttemptAt = apiEnteredAtMs
+    }
+    private fun emitApiEntry(fields: Map<String, Any?>) {
+        val entered = apiEnteredAtMs ?: return
+        event("ant_api_entered", fields + mapOf("apiEnteredAtMs" to entered,
+            "requestToApiEntryMs" to (fields["requestedAtMs"] as? Long)?.let { entered - it }), result = false)
     }
     private var controlState = "inactive"
     private var stopReason: String? = null
@@ -136,6 +146,8 @@ internal class ManualAntControl(
     private var lastSubmitted: Double? = null
     private var lastRequested: Double? = null
     private var lastApiSuccess: Map<String, Any?>? = null
+    private var pendingObservation: Map<String, Any?>? = null
+    private var lastCompatiblePage11: Map<String, Any?>? = null
     private var lastManualApiSuccess: Map<String, Any?>? = null
     private var lastStopCommand: Map<String, Any?>? = null
     private var lastApiError: Map<String, Any?>? = null
@@ -144,16 +156,21 @@ internal class ManualAntControl(
     private var attempts = 0
     private var stopResult: String? = null
     private var lastResult: Map<String, Any?>? = null
+    private var lastManualRejection: Map<String, Any?>? = null
     private fun event(kind: String, fields: Map<String, Any?> = emptyMap(), result: Boolean = true): Map<String, Any?> {
         val e = mapOf("sequence" to ++sequence, "event" to kind, "monotonicMs" to clock(), "target" to target.toMap(),
-            "physicalApplication" to "unconfirmed") + fields
+            "physicalApplication" to "unconfirmed") + fields +
+            (if (kind == "rejected") mapOf("requestedPercent" to lastRequested) else emptyMap())
+        if (kind == "rejected") lastManualRejection = e
         if (result) lastResult = e
         emit(e); return e
     }
     /** Observe from the serial worker; transitions are logged, never transmit. */
     fun supervise() {
         val failure = abortReason()
+        if (failure != null || stopped || faulted || targetsInvalidated) cancelPending(failure ?: "control_closed")
         val next = when {
+            stopped && stopReason == "telemetry_not_fresh" && !closeComplete && !faulted -> "suspended"
             (stopped || stopIntent.get() != null) && !closeComplete -> "stopping"
             faulted || closeFailed || (stopped && everEnabled && stopResult != null && stopResult != "zero_api_returned_unconfirmed") || (stopped && (stopReason?.startsWith("link_lost") == true || stopReason == "disconnected")) -> "error"
             stopped -> "stopped"
@@ -209,11 +226,18 @@ internal class ManualAntControl(
             if (deadline?.let { clock() >= it } == true) "test_timeout" else link().reason(target)?.let { "link_lost:$it" }
         return terminalAbort
     }
-    fun request(percent: Double): Map<String, Any?> {
+    fun suspendForMissingTelemetry(): Boolean {
+        check(abortReason() == "link_lost:telemetry_not_fresh")
+        return stop("telemetry_not_fresh", allowZero = link().stopReason(target) == null)
+    }
+
+    fun request(percent: Double, requestedAt: Long = clock(), requestedAtUtc: String? = null): Map<String, Any?> {
         attempts++
         val value = percent.takeIf { it.isFinite() }
         lastRequested = value
-        event("request", mapOf("attempt" to attempts, "requestedPercent" to value))
+        val requestFields = mapOf("requestId" to attempts, "requestedPercent" to value,
+            "requestedAtMs" to requestedAt, "requestedAtUtc" to requestedAtUtc)
+        event("request", requestFields + mapOf("attempt" to attempts))
         if (mode == ManualControlMode.MANUAL_SESSION && authorizedRange?.accepts(percent) != true)
             return event("rejected", mapOf("reason" to "slope_outside_authorized_profile", "authorizedRange" to authorizedRange?.toMap(), "apiCalled" to false))
         if ((mode == ManualControlMode.REFRESH_TRIAL || mode == ManualControlMode.LOW_LOAD) && percent != 0.0 && percent != 0.5)
@@ -232,47 +256,135 @@ internal class ManualAntControl(
         if (reason != null) return event("rejected", mapOf("reason" to reason, "attempt" to attempts))
         if (mode == ManualControlMode.ISOLATED_TWO && percent == 2.0 && twoPercentAttempted) return event("rejected", mapOf("reason" to "isolated_two_already_attempted", "apiCalled" to false))
         if (mode == ManualControlMode.ISOLATED_THREE && percent == 3.0 && threePercentAttempted) return event("rejected", mapOf("reason" to "isolated_three_already_attempted", "apiCalled" to false))
-        if (lastSubmitted == percent) return event("duplicate_skipped", mapOf("requestedPercent" to percent))
-        if (lastAttemptAt?.let { clock() - it < 1000 } == true) return event("rejected", mapOf("reason" to "rate_limited"))
-        if (mode == ManualControlMode.ISOLATED_TWO && percent == 2.0) twoPercentAttempted = true
-        if (mode == ManualControlMode.ISOLATED_THREE && percent == 3.0) threePercentAttempted = true
-        return send(percent, bytes, false)
+        lastManualRejection = null
+        // Returning to the accepted goal cancels a different deferred change too.
+        if (lastSubmitted == percent) {
+            cancelPending("latest_matches_accepted")
+            return event("duplicate_skipped", mapOf("requestedPercent" to percent))
+        }
+        val previous = pendingDesired
+        pendingDesired = Desired(percent, bytes, attempts, requestedAt, requestedAtUtc)
+        val delay = nextManualDelayMs() ?: 0L
+        if (delay > 0) return event("manual_pending", requestFields + mapOf("dueAtMs" to clock() + delay,
+            "reason" to "transport_interval", "replacesRequestId" to previous?.id, "apiCalled" to false))
+        return flushPending() ?: if (pendingDesired != null && !targetsInvalidated)
+            event("manual_pending", requestFields + mapOf("reason" to "newer_input_waiting", "apiCalled" to false))
+            else event("command_cancelled", mapOf("apiCalled" to false, "reason" to "control_closed"))
     }
-    /** Called only on the serial worker. No timer, captured payload or queue of targets.
-     * A late heartbeat sends at most once using the current API-accepted goal. */
+    private fun cancelPending(reason: String) {
+        val pending = pendingDesired ?: return
+        pendingDesired = null
+        event("manual_pending_cancelled", mapOf("requestId" to pending.id, "requestedPercent" to pending.percent,
+            "reason" to reason, "apiCalled" to false), result = false)
+    }
+    /** Only this slot is deferred; it never captures an old target in a timer. */
+    fun nextManualDelayMs(): Long? {
+        if (pendingDesired == null || !enabled || stopped || faulted || targetsInvalidated || abortReason() != null) return null
+        return lastAttemptAt?.let { (it + ManualControlPolicy.MIN_COMMAND_MS - clock()).coerceAtLeast(0) } ?: 0L
+    }
+    fun flushPending(): Map<String, Any?>? {
+        if (pendingDesired == null) return null
+        if (!enabled || stopped || faulted || targetsInvalidated || abortReason() != null) {
+            cancelPending(abortReason() ?: "control_closed"); return null
+        }
+        if (nextManualDelayMs() != 0L || manualPriorityWaiting()) return null
+        val desired = pendingDesired!!
+        // Profile and connection are rechecked immediately before deferred emission.
+        if (mode == ManualControlMode.MANUAL_SESSION && authorizedRange?.accepts(desired.percent) != true) {
+            cancelPending("profile_not_authorized"); return null
+        }
+        pendingDesired = null
+        if (mode == ManualControlMode.ISOLATED_TWO && desired.percent == 2.0) twoPercentAttempted = true
+        if (mode == ManualControlMode.ISOLATED_THREE && desired.percent == 3.0) threePercentAttempted = true
+        return send(desired.percent, desired.bytes, false, desired = desired)
+    }
+    /** Manual work always wins; missed refreshes never form a catch-up queue. */
     fun refreshTarget(): Map<String, Any?>? {
-        if (!mode.refreshes || !enabled || stopped || faulted || stopIntent.get() != null || abortReason() != null) return null
+        if (pendingDesired != null) return flushPending()
+        if (!mode.refreshes || !enabled || stopped || faulted || targetsInvalidated || abortReason() != null || manualPriorityWaiting()) return null
         val current = refreshGoal ?: return null
-        val previous = lastAttemptAt ?: return null
+        val previous = lastAcceptedAt ?: return null
         if (clock() - previous < ManualControlPolicy.REFRESH_MS) return null
         event("periodic_refresh", mapOf("requestedPercent" to current, "intervalMs" to ManualControlPolicy.REFRESH_MS), result = false)
-        return send(current, encodePro1Slope(current), false, periodic = true)
+        return send(current, encodePro1Slope(current), false, periodic = true, desired = acceptedDesired)
     }
-    private fun send(percent: Double, bytes: ByteArray, stopping: Boolean, periodic: Boolean = false): Map<String, Any?> {
+    private fun send(percent: Double, bytes: ByteArray, stopping: Boolean, periodic: Boolean = false, desired: Desired? = null): Map<String, Any?> {
         if (!stopping && stopIntent.get() != null) return event("command_cancelled", mapOf("apiCalled" to false, "reason" to "targets_invalidated"))
+        if (periodic && manualPriorityWaiting()) return event("refresh_yielded", mapOf("apiCalled" to false), result = false)
+        val previousAttempt = lastAttemptAt
         lastAttemptAt = clock()
         val revision = if (stopping || periodic) targetRevision else targetRevision + 1
         val fields = mapOf("commandId" to ++commandSequence, "targetRevision" to revision,
             "requestedPercent" to percent, "payloadHex" to hex(bytes), "stopRequest" to stopping,
-            "api" to "AntChannel.setBroadcastData", "apiReturned" to false, "periodicRefresh" to periodic)
-        currentApiFields = fields; apiEnteredAtMs = null
+            "api" to "AntChannel.setBroadcastData", "apiReturned" to false, "periodicRefresh" to periodic,
+            "requestId" to desired?.id, "requestedAtMs" to desired?.requestedAt, "requestedAtUtc" to desired?.requestedAtUtc)
+        apiEnteredAtMs = null
         event("api_attempt", fields)
         return try {
             if (!stopping && stopIntent.get() != null) throw ManualCommandCancelledException()
+            if (!stopping && manualPriorityWaiting()) {
+                lastAttemptAt = previousAttempt
+                if (!periodic) pendingDesired = desired
+                return event(if (periodic) "refresh_yielded" else "manual_dispatch_yielded", fields + mapOf("apiCalled" to false), result = false)
+            }
             transport(bytes.copyOf(), stopping)
+            val returnedAt = clock()
+            emitApiEntry(fields)
             lastSubmitted = percent
-            if (!stopping) { refreshGoal = percent; targetRevision = revision }
-            event("api_returned", fields + mapOf("apiReturned" to true, "apiReturnedAtMs" to clock(),
-                "apiEnteredAtMs" to apiEnteredAtMs, "apiResult" to "void_return_no_delivery_confirmation")).also { lastApiSuccess = it; if (stopping) lastStopCommand = it else lastManualApiSuccess = it }
+            if (!stopping) {
+                refreshGoal = percent
+                targetRevision = revision
+                acceptedDesired = desired
+                lastAcceptedAt = returnedAt
+            }
+            val accepted = event("api_returned", fields + mapOf(
+                "apiReturned" to true, "apiReturnedAtMs" to returnedAt, "apiEnteredAtMs" to apiEnteredAtMs,
+                "requestToApiEntryMs" to desired?.let { request -> apiEnteredAtMs?.minus(request.requestedAt) },
+                "apiDurationMs" to apiEnteredAtMs?.let { returnedAt - it },
+                "apiResult" to "void_return_no_delivery_confirmation",
+            ))
+            lastApiSuccess = accepted
+            if (stopping) {
+                lastStopCommand = accepted
+            } else {
+                lastManualApiSuccess = accepted
+                if (!periodic) {
+                    pendingObservation = accepted
+                    lastCompatiblePage11 = null
+                }
+            }
+            accepted
         } catch (_: ManualCommandCancelledException) {
+            lastAttemptAt = previousAttempt
             event("command_cancelled", fields + mapOf("apiCalled" to false, "reason" to "targets_invalidated"))
         } catch (error: Exception) {
+            val failedAt = clock()
+            emitApiEntry(fields)
             faulted = true; enabled = false; refreshGoal = null
+            cancelPending("api_error")
             supervise()
             val details = try { describeError(error) } catch (_: Exception) { mapOf("type" to error.javaClass.name, "message" to error.message) }
-            event("api_error", fields + mapOf("apiEnteredAtMs" to apiEnteredAtMs, "apiErrorAtMs" to clock(), "error" to details)).also { lastApiError = it; if (stopping) lastStopCommand = it }
-        } finally { currentApiFields = null }
+            event("api_error", fields + mapOf("apiEnteredAtMs" to apiEnteredAtMs, "apiErrorAtMs" to failedAt, "error" to details)).also { lastApiError = it; if (stopping) lastStopCommand = it }
+        }
     }
+
+    fun observePage11(observation: Map<String, Any?>, receivedAtMs: Long) {
+        val command = pendingObservation ?: return
+        val returnedAt = command["apiReturnedAtMs"] as Long
+        val percent = command["requestedPercent"] as Double
+        val payload = encodePro1Slope(percent)
+        val expected = (payload[5].toInt() and 255) or ((payload[6].toInt() and 255) shl 8)
+        if (receivedAtMs <= returnedAt || observation["rawWordAtBytes4And5"] != expected) return
+        pendingObservation = null
+        lastCompatiblePage11 = event("page11_numeric_match", observation + mapOf(
+            "commandId" to command["commandId"], "requestId" to command["requestId"],
+            "requestedPercent" to percent, "receivedAtMs" to receivedAtMs,
+            "apiReturnToObservationMs" to receivedAtMs - returnedAt,
+            "requestedAtUtc" to command["requestedAtUtc"],
+            "requestToObservationMs" to (command["requestedAtMs"] as? Long)?.let { receivedAtMs - it },
+        ), result = false)
+    }
+
     /** Exactly one zero attempt, only after activation and with a still usable link.
      * Force this one duplicate zero for stop; a previous void return proves no delivery.
      * Returns whether radio drain time is needed before closing. Never retries. */
@@ -280,6 +392,8 @@ internal class ManualAntControl(
         if (stopped) return false
         invalidateTargets(reason)
         refreshGoal = null
+        pendingObservation = null
+        cancelPending(reason)
         stopped = true; enabled = false; stopReason = reason; endedAt = clock()
         supervise()
         event("stop_requested", mapOf("reason" to reason, "zeroIsNotSafeResistance" to true,
@@ -304,7 +418,7 @@ internal class ManualAntControl(
         val now = clock()
         val reasons = buildList {
             if (faulted) add("api_fault_requires_reconnect")
-            if (stopped) add("session_stopped")
+            if (stopped) add(if (stopReason == "telemetry_not_fresh") "control_suspended" else "session_stopped")
             if (!stopped && stopIntent.get() != null) add("stop_requested")
             if (enabled && deadline?.let { now >= it } == true) add("test_timeout")
             if (terminalAbort != null && terminalAbort != "test_timeout") add(terminalAbort!!)
@@ -330,9 +444,13 @@ internal class ManualAntControl(
             "stopRequestedAtMs" to stopIntent.get()?.requestedAtMs, "stopIntentReason" to stopIntent.get()?.reason,
             "continuousControlEnabled" to continuousAllowed,
             "continuousBlockReason" to if (continuousAllowed) null else "physical_stop_and_radio_buffer_validation_required", "lastRequestedPercent" to lastRequested,
-            "lastManualApiSuccess" to lastManualApiSuccess, "lastStopCommand" to lastStopCommand,
+            "lastManualApiSuccess" to lastManualApiSuccess, "lastCompatiblePage11" to lastCompatiblePage11, "lastStopCommand" to lastStopCommand,
+            "pendingManualChange" to pendingDesired?.takeIf { enabled && !faulted && !targetsInvalidated && terminalAbort == null }?.let {
+                mapOf("percent" to it.percent, "requestId" to it.id, "requestedAtMs" to it.requestedAt,
+                    "dueAtMs" to (lastAttemptAt?.plus(ManualControlPolicy.MIN_COMMAND_MS) ?: now), "reason" to "transport_interval") },
             "lastApiSuccess" to lastApiSuccess, "lastApiError" to lastApiError, "lastSubmittedPercent" to lastSubmitted,
             "attempts" to attempts, "pendingCommands" to 0, "stopResult" to stopResult,
+            "lastManualRejection" to lastManualRejection,
             "lastResult" to lastResult, "physicalApplication" to "unconfirmed", "resistanceAfterClose" to "unknown")
     }
 }

@@ -100,14 +100,14 @@ class ManualSessionTest {
         assertEquals(hex(encodePro1Slope(-2.0)),s.frames.last())
         s.tick(60000);assertEquals(4,s.frames.size)
         s.tick(60000);assertEquals(4,s.frames.size)
-        s.c.request(15.0);assertEquals("rate_limited",(s.c.snapshot()["lastResult"] as Map<*,*>)["reason"])
-        s.tick(65000);assertEquals(hex(encodePro1Slope(-2.0)),s.frames.last())
+        s.c.request(15.0);assertEquals("manual_pending",(s.c.snapshot()["lastResult"] as Map<*,*>)["event"])
+        s.tick(65000);assertEquals(hex(encodePro1Slope(15.0)),s.frames.last())
         s.time=66000;s.c.request(0.0);s.tick(71000)
         assertEquals(hex(encodePro1Slope(0.0)),s.frames.last())
     }
     @Test fun rateLimitsAndDuplicateChangesDoNotReplaceAcceptedTarget() {
         val s=Sim();s.arm();s.c.request(0.5)
-        s.time=999;assertEquals("rate_limited",s.c.request(15.0)["reason"])
+        s.time=999;assertEquals("manual_pending",s.c.request(15.0)["event"])
         assertEquals("duplicate_skipped",s.c.request(0.5)["event"])
         s.tick(5000);assertEquals(hex(encodePro1Slope(0.5)),s.frames.last())
         s.time=6000;s.c.request(15.0);s.tick(11000)

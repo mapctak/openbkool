@@ -38,7 +38,8 @@ import java.util.concurrent.RejectedExecutionException
 
 /** Diagnóstico RX y entrenamiento V1; control manual solo tras activación explícita por sesión. */
 class AntTrainerSearch(context: Context, private val training: Boolean = false,
-    private val onRunningChanged: (Boolean) -> Unit = {}) : EventChannel.StreamHandler {
+    private val backgroundStatus: () -> Map<String, Any?> = { emptyMap() },
+    private val onFinished: () -> Unit = {}) : EventChannel.StreamHandler {
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private var sink: EventChannel.EventSink? = null
@@ -47,10 +48,16 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
         sink = events
-        events.success(latest)
+        events.success(snapshot())
     }
-    override fun onCancel(arguments: Any?) { sink = null; stop(reason = "event_stream_closed") }
-    fun snapshot(): Map<String, Any?> = latest
+    override fun onCancel(arguments: Any?) {
+        sink = null
+        if (!training) stop(reason = "event_stream_closed")
+    }
+    fun emitSnapshot() { sink?.success(snapshot()) }
+    fun detachEvents() { sink = null }
+    fun hasActiveSession() = active != null
+    fun snapshot(): Map<String, Any?> = latest + backgroundStatus()
 
     fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null) {
         if (mode !in (if (training) listOf("training", "training_connected") else listOf("sequential", "fec", "bkool_v1"))) {
@@ -96,7 +103,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         try { session.worker.execute { session.prepareSlope(percent, result) } }
         catch (_: RejectedExecutionException) { result.error("session_closed", "Sesión cerrada", null) }
     }
-    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String? = "trial_30s", experimentalConfirmed: Boolean = false, rangeProfile: String? = null) {
+    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String? = "trial_30s", experimentalConfirmed: Boolean = false, rangeProfile: String? = null, requestedAtUtc: String? = null) {
+        val requestedAt = android.os.SystemClock.elapsedRealtime()
         val session = active
         if (!training || session == null) { result.error("not_connected", "No hay entrenamiento activo", null); return }
         val queued = method != "stopManualTest"
@@ -104,13 +112,17 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             session.cancelled = true; session.invalidateTargets("manual_stop")
         }
         if (queued && !session.commandFence.tryEnqueue()) { result.error("command_busy", "Ya hay una orden pendiente; no se encola otra", null); return }
+        val manualChange = method == "setManualSlope"
+        if (manualChange) session.waitingManualChanges.incrementAndGet()
         try { session.worker.execute {
+            if (manualChange) session.waitingManualChanges.decrementAndGet()
             val cancelled = if (queued) session.commandFence.dequeue() else null
             if (cancelled != null) session.rejectPending(method, percent, cancelled, result)
-            else session.manualAction(method, sessionId, explicit, percent, result, controlMode, experimentalConfirmed, rangeProfile)
+            else session.manualAction(method, sessionId, explicit, percent, result, controlMode, experimentalConfirmed, rangeProfile, requestedAt, requestedAtUtc)
         } }
         catch (_: RejectedExecutionException) {
             if (queued) session.commandFence.dequeue()
+            if (manualChange) session.waitingManualChanges.decrementAndGet()
             result.error("session_closed", "Sesión cerrada", null)
         }
     }
@@ -136,6 +148,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             commandFence.cancel(reason)
             manual.invalidateTargets(reason)
             main.removeCallbacks(heartbeat)
+            main.removeCallbacks(manualDispatch)
             refreshTrialDeadline?.let { main.removeCallbacks(it) }; refreshTrialDeadline = null
         }
         private val transmissionAudit = AntTransmissionAudit(android.os.SystemClock::elapsedRealtime)
@@ -153,7 +166,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private var stopping = false
         @Volatile private var radioDead = false
         private val stopReplies = mutableListOf<MethodChannel.Result>()
-        private val manualEvents = mutableListOf<Map<String, Any?>>()
+        val waitingManualChanges = java.util.concurrent.atomic.AtomicInteger(0)
+        private val manualEvents = ArrayDeque<Map<String, Any?>>()
+        private var droppedManualEvents = 0
+        private var stopDrainUntilMs = 0L
         private var finalClose: Runnable? = null
         @Volatile private var refreshTrialDeadline: Runnable? = null
         private val manual: ManualAntControl by lazy { ManualAntControl(target, android.os.SystemClock::elapsedRealtime,
@@ -166,9 +182,12 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 selectedChannel.setBroadcastData(payload)
             }, { e ->
                 val entry = e + mapOf("timestamp" to now(), "sessionId" to id)
-                manualEvents.add(entry)
-                event("manual_control", entry.toString())
-            }, continuousAllowed = ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED, describeError = ::antErrorDetails) }
+                if (manualEvents.size >= 2000) { manualEvents.removeFirst(); droppedManualEvents++ }
+                manualEvents.addLast(entry)
+                event("manual_control", entry.toString(), details = entry)
+                record("manual:${entry["event"]}", null, entry)
+            }, continuousAllowed = ManualControlPolicy.CONTINUOUS_PHYSICAL_ENABLED,
+                manualPriorityWaiting = { waitingManualChanges.get() > 0 }, describeError = ::antErrorDetails) }
         private fun manualLink(): ManualControlLink {
             val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime())
             val device = devices.values.firstOrNull { it["deviceNumber"] == target.number && it["deviceType"] == target.type && it["transmissionType"] == target.transmission }
@@ -195,8 +214,9 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private val heartbeat = Runnable { submit {
             if (!finished && !cancelled && opened) {
                 manual.supervise()
-                manual.abortReason()?.let { finish(it); return@submit }
+                if (handleControlAbort()) return@submit
                 manual.refreshTarget()
+                scheduleManualDispatch()
                 if (manual.snapshot()["faulted"] == true) { finish("manual_api_error"); return@submit }
                 val signal = telemetry!!.signal(android.os.SystemClock.elapsedRealtime())
                 control.connectionVerified(dedicated && identityVerified && signal == "receiving")
@@ -205,21 +225,51 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 if (signal == "disconnected") finish("disconnected") else { publish(); scheduleHeartbeat(1000) }
             }
         } }
+        private val manualDispatch: Runnable = Runnable { submit {
+            if (!finished && !cancelled && opened && !manual.targetsInvalidated) {
+                manual.supervise()
+                if (handleControlAbort()) return@submit
+                manual.flushPending()
+                if (manual.snapshot()["faulted"] == true) { finish("manual_api_error"); return@submit }
+                publish(); scheduleManualDispatch()
+            }
+        } }
+        private fun scheduleManualDispatch() {
+            main.removeCallbacks(manualDispatch)
+            if (finished || cancelled || manual.targetsInvalidated) return
+            val delay = manual.nextManualDelayMs() ?: return
+            main.postDelayed(manualDispatch, delay)
+            if (finished || cancelled || manual.targetsInvalidated) main.removeCallbacks(manualDispatch)
+        }
         private fun scheduleHeartbeat(delayMs: Long) {
-            if (cancelled || finished || manual.targetsInvalidated) return
+            if (cancelled || finished) return
             main.postDelayed(heartbeat, delayMs)
-            if (cancelled || finished || manual.targetsInvalidated) main.removeCallbacks(heartbeat)
+            if (cancelled || finished) main.removeCallbacks(heartbeat)
+        }
+        // Metric dropout revokes the authorization for this connection. The existing
+        // single zero and drain are reused, while RX supervision stays alive.
+        private fun handleControlAbort(result: MethodChannel.Result? = null): Boolean {
+            val failure = manual.abortReason() ?: return false
+            if (failure != "link_lost:telemetry_not_fresh") {
+                end(failure, result)
+                return true
+            }
+            val zeroQueued = manual.suspendForMissingTelemetry()
+            main.removeCallbacks(manualDispatch)
+            if (zeroQueued) stopDrainUntilMs = android.os.SystemClock.elapsedRealtime() + ManualAntControl.DRAIN_MS
+            event("control_suspended", "Telemetría parcial; control suspendido. Solicitud 0 % a API=$zeroQueued")
+            return false
         }
         private fun csvFailure(error: Exception) {
             csvError = error.toString()
             runCatching { csv?.close() }; csv = null
             event("csv_error", "Registro CSV interrumpido: $error")
         }
-        private fun record(kind: String, payload: ByteArray?) {
+        private fun record(kind: String, payload: ByteArray?, details: Map<String, Any?>? = null) {
             val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()) ?: return
             try { csv?.write(csvRow(listOf(now(), t["elapsedMs"], kind, "BKOOL_V1_PUBLIC", target.number, target.type, target.transmission,
                 payload?.let { hex(it) }, t["speedKmh"], t["powerW"], t["cadenceRpm"], t["distanceM"],
-                t["signal"], t["distancePartial"], t["speedAgeMs"], t["powerAgeMs"]))) }
+                t["signal"], t["distancePartial"], t["speedAgeMs"], t["powerAgeMs"], details?.let { org.json.JSONObject(it).toString() }))) }
             catch (error: Exception) { csvFailure(error) }
         }
         private val devices = linkedMapOf<String, MutableMap<String, Any?>>()
@@ -279,7 +329,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             publish()
             result.error("command_cancelled", "Orden cancelada por parada: $reason", null)
         }
-        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String?, experimentalConfirmed: Boolean, rangeProfile: String?) {
+        fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?, result: MethodChannel.Result, controlMode: String?, experimentalConfirmed: Boolean, rangeProfile: String?, requestedAt: Long, requestedAtUtc: String?) {
             if (sessionId != id) { result.error("stale_session", "La sesión ha cambiado; vuelve a conectar", null); return }
             if (finished || stopping || (cancelled && method != "stopManualTest")) {
                 result.error("session_stopping", "La sesión está cerrándose", null); return
@@ -304,13 +354,13 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 }
                 "setManualSlope" -> {
                     if (percent == null) { result.error("invalid_slope", "Pendiente numérica requerida", null); return }
-                    manual.request(percent)
+                    manual.request(percent, requestedAt, requestedAtUtc)
+                    scheduleManualDispatch()
                 }
                 "stopManualTest" -> { end("manual_stop", result); return }
             }
-            val failure = manual.abortReason()
+            if (handleControlAbort(result)) return
             if (manual.snapshot()["faulted"] == true) { end("manual_api_error", result); return }
-            if (failure != null) { end(failure, result); return }
             publish(); result.success(latest)
         }
         fun begin() {
@@ -321,7 +371,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     val file = java.io.File.createTempFile("training_", ".csv", context.filesDir)
                     csvFile = file.name; csv = file.bufferedWriter()
                     csv!!.write(csvRow(listOf("timestamp_utc", "elapsed_ms", "event", "protocol", "device_id", "device_type", "transmission_type",
-                        "payload_hex", "speed_kmh", "power_w", "cadence_rpm", "distance_m", "signal", "distance_partial", "speed_age_ms", "power_age_ms")))
+                        "payload_hex", "speed_kmh", "power_w", "cadence_rpm", "distance_m", "signal", "distance_partial", "speed_age_ms", "power_age_ms", "details_json")))
                 } catch (error: Exception) { csvFailure(error); finish("error"); return }
             }
             if (training || mode == "bkool_v1") beginV1() else beginFecSearch()
@@ -361,7 +411,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                         "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
             }
             val report = mapOf(
-                "controlDiagnosticsVersion" to 10,
+                "controlDiagnosticsVersion" to 11,
                 "experimentalSlopePolicy" to mapOf("scope" to "legacy_isolated_trials_only", "physicalMaxPercent" to ManualControlPolicy.MAX_PERCENT,
                     "isolatedMaxPercent" to 3.0, "isolatedMaxTwoPercentRequests" to 1, "isolatedMaxThreePercentRequests" to 1,
                     "twoPercentEnabled" to true, "threePercentEnabled" to true, "fourPercentEnabled" to false,
@@ -400,7 +450,12 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     "adapterReadback" to adapterChannelId, "lastReceived" to receivedChannelId,
                     "allMatch" to channelIdentitiesMatch(target, configuredChannelId, adapterChannelId, receivedChannelId),
                     "readbackError" to identityReadbackError),
-                "sessionId" to id, "manualControl" to manualState, "manualControlEvents" to manualEvents.toList(),
+                "sessionId" to id, "manualControl" to manualState, "manualControlEvents" to manualEvents.toList(), "droppedManualControlEvents" to droppedManualEvents,
+                "antLink" to when {
+                    finished || !opened -> "channel_closed"
+                    radioDead -> "radio_unavailable"
+                    else -> telemetry?.signal(android.os.SystemClock.elapsedRealtime())
+                },
                 "selectedDevice" to target.toMap(),
                 "channelMode" to if (dedicated) "dedicated_bidirectional_manual_opt_in" else "background_receive_only",
                 "connectionState" to if (finished) "closed" else if (identityVerified) "identity_verified" else "waiting_for_identity",
@@ -424,7 +479,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     "v1RadioTimeoutsApplied" to dedicated),
             )
             latest = report
-            main.post { if (latest === report) { onRunningChanged(!finished); sink?.success(report) } }
+            main.post { if (latest === report) { sink?.success(snapshot()) } }
         }
         private fun deadline(seconds: Int, action: () -> Unit) {
             phaseDeadline?.let { main.removeCallbacks(it) }
@@ -574,8 +629,9 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 channelCapabilities = capabilityDetails(actualCaps)
                 if (cancelled) { finish("stopped"); return }
                 operations.run("v1.setChannelEventHandler") { acquired.setChannelEventHandler(object : IAntChannelEventHandler {
-                    override fun onChannelDeath() { transmissionAudit.died(); invalidateTargets("channel_death"); radioDead = true; channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("disconnected") } }
+                    override fun onChannelDeath() { transmissionAudit.died(); invalidateTargets("channel_death"); radioDead = true; channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("channel_death") } }
                     override fun onReceiveMessage(type: MessageFromAntType, parcel: AntMessageParcel) {
+                        val receivedAt = android.os.SystemClock.elapsedRealtime()
                         val id = parcel.messageId; val content = parcel.messageContent.copyOf()
                         if (type == MessageFromAntType.CHANNEL_EVENT && content.size >= 3) {
                             val code = content[2].toInt() and 255
@@ -586,7 +642,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                             }
                             if (code == 7) channelClosed.countDown()
                         }
-                        callback(token) { receive(type.name, id, content) }
+                        callback(token) { receive(type.name, id, content, receivedAt) }
                     }
                 }) }
                 val configuration = object : V1BackgroundChannel, V1DedicatedChannel {
@@ -657,11 +713,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 } else { fail("V1 configure", error) }
             }
         }
-        override fun onServiceDisconnected(name: ComponentName) { radioDead = true; submit { if (!finished) { event("service_disconnected", "ANT Radio Service desconectado"); finish("disconnected") } } }
+        override fun onServiceDisconnected(name: ComponentName) { radioDead = true; submit { if (!finished) { event("service_disconnected", "ANT Radio Service desconectado"); finish("radio_service_disconnected") } } }
         override fun onBindingDied(name: ComponentName) { onServiceDisconnected(name) }
         override fun onNullBinding(name: ComponentName) { onServiceDisconnected(name) }
 
-        private fun receive(type: String, messageId: Int, content: ByteArray) {
+        private fun receive(type: String, messageId: Int, content: ByteArray, receivedAt: Long) {
             val decoded = decodeAntFrame(messageId, content)
             if (training && decoded != null) {
                 receivedChannelId = mapOf("deviceNumber" to decoded.deviceNumber, "deviceType" to decoded.deviceType, "transmissionType" to decoded.transmissionType)
@@ -673,7 +729,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             if (training && decoded != null) {
                 if (!identityVerified) { identityVerified = true; event("identity_verified", "Identidad extendida recibida coincide con $target") }
                 identificationTiming.receive(decoded)
-                telemetry!!.receive(decoded, android.os.SystemClock.elapsedRealtime())
+                telemetry!!.receive(decoded, receivedAt)
+                observeBkoolPage11(decoded.payload)?.let { manual.observePage11(it, receivedAt) }
                 control.connectionVerified(dedicated)
                 record("page", decoded.payload)
             }
@@ -705,7 +762,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 if (code == 1 || code == 7) {
                     radioDead = true
                     phaseErrors = true
-                    if (training) finish("disconnected") else advance()
+                    if (training) finish(if (code == 7) "channel_closed" else "radio_search_timeout") else advance()
                     return
                 }
             }
@@ -776,11 +833,13 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             refreshTrialDeadline?.let { main.removeCallbacks(it) }; refreshTrialDeadline = null
             val zeroQueued = manual.stop(reason, allowZero = !radioDead && opened && reason != "disconnected")
             event("safe_stop", "Parada $reason; solicitud 0 % a API=$zeroQueued. Aplicación y resistencia segura SIN confirmar.")
-            if (zeroQueued) {
+            if (zeroQueued) stopDrainUntilMs = android.os.SystemClock.elapsedRealtime() + ManualAntControl.DRAIN_MS
+            val drain = stopDrainUntilMs - android.os.SystemClock.elapsedRealtime()
+            if (drain > 0) {
                 status = "stopping_zero_unconfirmed"; publish()
                 val task = Runnable { submit { closeAfterStop(reason) } }
                 finalClose = task
-                main.postDelayed(task, ManualAntControl.DRAIN_MS)
+                main.postDelayed(task, drain)
             } else closeAfterStop(reason)
         }
         private fun closeAfterStop(reason: String) {
@@ -801,6 +860,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             publish()
             if (resourcesReleased) AntRadioCoordinator.release(this)
             active = null
+            main.post { if (active == null) onFinished() }
             stopReplies.forEach { it.success(latest) }; stopReplies.clear()
             worker.shutdown()
         }

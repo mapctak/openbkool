@@ -61,7 +61,8 @@ class _ExperimentalSlopesPageState extends State<ExperimentalSlopesPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.detached) &&
-        widget.controller.running) {
+        widget.controller.running &&
+        !widget.controller.backgroundAuthorized) {
       unawaited(widget.controller.stop(reason: 'app_background'));
     }
   }

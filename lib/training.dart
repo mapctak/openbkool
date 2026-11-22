@@ -61,6 +61,7 @@ class _TrainingPageState extends State<TrainingPage>
             state == AppLifecycleState.detached) &&
         widget.stopOnExit &&
         widget.controller.running &&
+        !widget.controller.backgroundAuthorized &&
         !_backgroundStopRequested) {
       _backgroundStopRequested = true;
       widget.controller.stop(reason: 'app_background');
@@ -76,12 +77,13 @@ class _TrainingPageState extends State<TrainingPage>
   SlopeUiIntent? _slopeIntent;
   Future<void> _requestSlope(double percent, String? sessionId) async {
     final c = widget.controller;
-    if (c.commandBusy) return;
+    if (!c.acceptingManualChanges) return;
     final intent = SlopeUiIntent(
       sessionId: sessionId,
       percent: percent,
       eventCount:
-          (c.snapshot['manualControlEvents'] as List? ?? const []).length,
+          (c.snapshot['manualControlEvents'] as List? ?? const []).length +
+          (c.snapshot['droppedManualControlEvents'] as int? ?? 0),
     );
     setState(() => _slopeIntent = intent);
     await c.manualAction(
@@ -137,7 +139,7 @@ class _TrainingPageState extends State<TrainingPage>
           manual['eligible'] != false &&
           !c.manualStopping &&
           !c.controlTransportUncertain &&
-          !c.commandBusy &&
+          c.acceptingManualChanges &&
           ((manual['mode'] == 'continuous_experimental' &&
                   manual['continuousControlEnabled'] == true) ||
               (remainingMs != null && remainingMs > 0));
@@ -208,6 +210,7 @@ class _TrainingPageState extends State<TrainingPage>
                   slopeIntent: _slopeIntent,
                 ),
               if (!widget.simple) ...[
+                ...trainingAvailability(r),
                 const Text(
                   'BKOOL_V1_PUBLIC · telemetría. Control solo para 30064/112/5, modelo 22, tras activación explícita.',
                 ),
@@ -246,7 +249,7 @@ class _TrainingPageState extends State<TrainingPage>
                   label: const Text('Iniciar entrenamiento'),
                 ),
               OutlinedButton.icon(
-                onPressed: c.running && !c.commandBusy ? c.stop : null,
+                onPressed: c.running && !c.manualStopping ? c.stop : null,
                 icon: const Icon(Icons.stop),
                 label: const Text('Finalizar entrenamiento'),
               ),

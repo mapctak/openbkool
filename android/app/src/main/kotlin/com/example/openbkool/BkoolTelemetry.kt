@@ -89,6 +89,7 @@ internal class BkoolTelemetry(private val startedMs: Long,
         val freshPower = state == "receiving" && powerAt?.let { ms - it < 10000 } == true
         return mapOf("page11Observation" to page11?.plus(mapOf("receivedAtMs" to page11At,
                 "ageMs" to (ms - page11At!!), "stale" to (ms - page11At!! >= 5000))),
+            "partial" to (state == "receiving" && (!freshSpeed || !freshPower || speed == null || power == null || cadence == null)),
             "signal" to state, "speedKmh" to speed.takeIf { freshSpeed },
             "powerW" to power.takeIf { freshPower }, "cadenceRpm" to cadence.takeIf { freshPower },
             "distanceM" to distance, "distancePartial" to partial,

@@ -53,6 +53,7 @@ class WorkoutSummary extends StatelessWidget {
             Chip(label: Text(connectionLabel(state))),
           ],
         ),
+        ...trainingAvailability(report),
         Card(
           color: const Color(0xFF008F70),
           child: Padding(
@@ -139,6 +140,7 @@ class ManualOrderSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = SlopePresentation.fromReport(report, intent: intent);
+    final pending = report['clientPendingManualPercent'] as num?;
     return Semantics(
       liveRegion: true,
       child: Card(
@@ -155,6 +157,7 @@ class ManualOrderSummary extends StatelessWidget {
                   'active' => 'Activo',
                   'stopping' => 'Deteniendo',
                   'stopped' => 'Detenido',
+                  'suspended' => 'Suspendido',
                   'error' => 'Error',
                   _ => 'Esperando estado nativo',
                 }}',
@@ -181,7 +184,11 @@ class ManualOrderSummary extends StatelessWidget {
                   'Control finalizado · Se solicitó 0 % · Resistencia actual desconocida',
                 ),
               if (state.pending)
-                const Text('Solicitud pendiente de respuesta del controlador.'),
+                const Text('Solicitud pendiente de respuesta del controlador.')
+              else if (pending != null)
+                Text(
+                  'Cambio pendiente · ${SlopePresentation.percent(pending)} %',
+                ),
               if (state.unrecordedIntent)
                 const Text(
                   'Solicitud sin registro en el controlador. Revisa el diagnóstico; no se confirma su envío.',
@@ -213,4 +220,31 @@ class ManualOrderSummary extends StatelessWidget {
       ),
     );
   }
+}
+
+List<Widget> trainingAvailability(Map<String, Object?> report) {
+  if (report['running'] != true) return const [];
+  final telemetry = report['telemetry'] as Map?;
+  final manual = report['manualControl'] as Map?;
+  return [
+    if (report['antLink'] == 'receiving') const Text('Conectado por ANT'),
+    if (telemetry?['partial'] == true)
+      const Text(
+        'Telemetría parcial · las métricas ausentes se muestran con —',
+      ),
+    if (manual?['state'] == 'suspended')
+      const Text(
+        'Control suspendido · inicia otra conexión para volver a autorizarlo',
+      )
+    else if (manual?['enabled'] == true)
+      const Text('Control autorizado'),
+    if (report['backgroundAuthorized'] == true)
+      Text(
+        report['appInBackground'] == true
+            ? 'Sesión activa en segundo plano'
+            : 'Sesión en segundo plano habilitada · DETENER en la notificación',
+      )
+    else
+      const Text('Sesión solo en primer plano'),
+  ];
 }

@@ -41,7 +41,7 @@ class IsolatedThreePercentTest {
     }
     @Test fun rateLimitAndDeadlineAreNotExtendedByRequests() {
         val s=Sim();s.arm();s.c.request(1.0);s.now=999
-        assertEquals("rate_limited",s.c.request(3.0)["reason"])
+        assertEquals("manual_pending",s.c.request(3.0)["event"])
         assertFalse(s.c.snapshot()["threePercentAttempted"] as Boolean)
         s.now=1000;s.c.request(3.0)
         for(second in 2L..29L){s.now=second*1000;s.c.supervise()}

@@ -198,7 +198,7 @@ class RefreshTrialTest {
             s.c.request(0.5);assertTrue(s.calls.isEmpty())
         }
         val s=Sim();s.arm();s.c.request(0.5);s.time.set(999)
-        assertEquals("rate_limited",s.c.request(0.0)["reason"])
-        s.tick(5000);assertEquals(hex(encodeManualSlope(0.5)),s.calls.last())
+        assertEquals("manual_pending",s.c.request(0.0)["event"])
+        s.tick(5000);assertEquals(hex(encodeManualSlope(0.0)),s.calls.last())
     }
 }

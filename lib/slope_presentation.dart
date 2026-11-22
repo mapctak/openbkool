@@ -50,6 +50,7 @@ class SlopePresentation {
   }) {
     final manual = report['manualControl'] as Map? ?? const {};
     final events = report['manualControlEvents'] as List? ?? const [];
+    final discarded = report['droppedManualControlEvents'] as int? ?? 0;
     final activeIntent =
         intent != null &&
             intent.sessionId != null &&
@@ -68,7 +69,7 @@ class SlopePresentation {
           (e['event'] == 'request' ||
               (e['event'] == 'api_attempt' && e['stopRequest'] != true))) {
         requested = value;
-        if (activeIntent != null && i >= activeIntent.eventCount) {
+        if (activeIntent != null && discarded + i >= activeIntent.eventCount) {
           newerRequest = true;
         }
       }
@@ -81,7 +82,7 @@ class SlopePresentation {
           apiError =
               'Error al enviar la orden a ANT: ${e['error'] ?? 'consulta el diagnóstico'}';
         }
-        if (activeIntent != null && i >= activeIntent.eventCount) {
+        if (activeIntent != null && discarded + i >= activeIntent.eventCount) {
           newerApi = true;
         }
       }
@@ -121,14 +122,16 @@ class SlopePresentation {
         (manual['enabled'] == true && remaining is num && remaining <= 0);
     final stopping =
         report['status'] == 'stopping_zero_unconfirmed' ||
-        (stopped && report['running'] == true);
+        (stopped &&
+            manual['state'] != 'suspended' &&
+            report['running'] == true);
     return SlopePresentation(
       requested: requested,
       apiError: apiError,
       apiPercent: apiPercent,
       apiEvent: apiEvent,
       apiIsStop: apiStop,
-      finished: stopped && !stopping,
+      finished: stopped && !stopping && manual['state'] != 'suspended',
       expired: expired,
       stopping: stopping,
       pending:

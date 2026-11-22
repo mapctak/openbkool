@@ -6,6 +6,7 @@ import 'ant_trainer_search.dart';
 import 'manual_control_status.dart';
 import 'slope_presentation.dart';
 import 'training.dart';
+import 'workout_summary.dart';
 import 'trainer_session.dart';
 
 /// Same half-point domain as the original UI; no physical capability assertion.
@@ -76,7 +77,9 @@ class _ManualRidePageState extends State<ManualRidePage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    if (widget.controller.running && !backgroundStopRequested) {
+    if (widget.controller.running &&
+        !widget.controller.backgroundAuthorized &&
+        !backgroundStopRequested) {
       unawaited(widget.controller.stop(reason: 'screen_closed'));
     }
     super.dispose();
@@ -89,6 +92,7 @@ class _ManualRidePageState extends State<ManualRidePage>
     } else if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.detached) &&
         widget.controller.running &&
+        !widget.controller.backgroundAuthorized &&
         !backgroundStopRequested) {
       backgroundStopRequested = true;
       unawaited(widget.controller.stop(reason: 'app_background'));
@@ -106,7 +110,7 @@ class _ManualRidePageState extends State<ManualRidePage>
             (m['authorizedRange'] as Map?)?['id'] == rangeProfile) &&
         m['enabled'] == true &&
         m['eligible'] == true &&
-        !c.commandBusy &&
+        c.acceptingManualChanges &&
         !c.manualStopping &&
         !c.controlTransportUncertain &&
         (!widget.refreshTrial ||
@@ -186,6 +190,11 @@ class _ManualRidePageState extends State<ManualRidePage>
       final policy = r[policyKey] as Map? ?? const {};
       final nativeAllowed = policy['physicalEnabled'] == true;
       final slope = SlopePresentation.fromReport(r);
+      final pending = c.pendingManualPercent;
+      final rejection = m['lastManualRejection'] as Map?;
+      final pendingText = pending == null
+          ? 'Cambio pendiente: ninguno'
+          : 'Cambio pendiente: ${ridePercent(pending)} · todavía no aceptado por API';
       final activation = ManualActivationStatus.fromReport(
         r,
         commandBusy: c.commandBusy,
@@ -225,6 +234,19 @@ class _ManualRidePageState extends State<ManualRidePage>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  Text(
+                    pendingText,
+                    key: const ValueKey('manualPendingSticky'),
+                    style: TextStyle(
+                      fontWeight: pending != null
+                          ? FontWeight.bold
+                          : FontWeight.normal,
+                    ),
+                  ),
+                  if (pending == 0)
+                    const Text(
+                      'LLANO pendiente: no se ha confirmado reducción de resistencia.',
+                    ),
                   Row(
                     children: [
                       Expanded(
@@ -295,7 +317,26 @@ class _ManualRidePageState extends State<ManualRidePage>
             padding: const EdgeInsets.all(16),
             children: [
               if (!widget.refreshTrial) ...[
-                const Text('Perfil autorizado por sesión'),
+                Card(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  child: ListTile(
+                    leading: const Icon(Icons.tune, size: 32),
+                    title: Text(
+                      'Perfil: $profileLabel',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    ),
+                    subtitle: const Text(
+                      'Positivo termina en +3 %. Para −5 % a +15 %, elige Original experimental antes de autorizar.',
+                    ),
+                  ),
+                ),
+                const Text(
+                  'Elegir perfil autorizado por sesión',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
                 DropdownButton<String>(
                   key: const ValueKey('manualRangeProfile'),
                   isExpanded: true,
@@ -350,10 +391,12 @@ class _ManualRidePageState extends State<ManualRidePage>
                   'active' => 'Activo',
                   'stopping' => 'Deteniendo',
                   'stopped' => 'Detenido',
+                  'suspended' => 'Suspendido por telemetría parcial',
                   'error' => 'Error',
                   _ => 'Inactivo',
                 }}',
               ),
+              ...trainingAvailability(r),
               Text('Pendiente seleccionada: ${ridePercent(selected)}'),
               Text('Pendiente solicitada: ${ridePercent(slope.requested)}'),
               Text(
@@ -374,6 +417,22 @@ class _ManualRidePageState extends State<ManualRidePage>
                 key: const ValueKey('manualRideOrdered'),
               ),
               Text(slope.apiStatus),
+              if (rejection != null)
+                Text(
+                  'Cambio rechazado definitivamente: ${ridePercent(rejection['requestedPercent'] as num?)} · ${rejection['reason']}',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              if ((selected == 0 || slope.requested == 0) &&
+                  (slope.apiError != null ||
+                      rejection != null ||
+                      c.controlTransportUncertain))
+                Text(
+                  'AVISO: LLANO no entregado. No se puede afirmar que la resistencia haya disminuido.',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               if (slope.apiError != null)
                 Text(
                   slope.apiError!,
@@ -417,7 +476,7 @@ class _ManualRidePageState extends State<ManualRidePage>
                       ),
                     ),
                 ],
-                onChanged: c.commandBusy || c.manualStopping
+                onChanged: !c.acceptingManualChanges || c.manualStopping
                     ? null
                     : (value) {
                         if (value == null) return;

@@ -90,6 +90,7 @@ class ManualActivationStatus {
           'manufacturer_model_not_verified' => 'Esperando la página 0x50 de esta sesión: fabricante 67 y modelo 22.',
           'signal_not_fresh' =>
             'No hay una página reciente del rodillo (menos de 3 segundos).',
+          'control_suspended' => 'Control suspendido por telemetría parcial. Puedes seguir recibiendo datos. Para volver a autorizar el control, inicia otra conexión.',
           'telemetry_not_fresh' => 'Esperando velocidad, potencia y cadencia válidas y recientes (menos de 10 segundos).',
           'native_state_missing' =>
             'Kotlin todavía no ha confirmado las condiciones de seguridad.',

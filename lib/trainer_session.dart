@@ -107,7 +107,14 @@ TrainerConnection connectionFor(Map<String, Object?> r, SavedTrainer selected) {
   if (r['clientError'] != null ||
       status.contains('error') ||
       status == 'cleanup_failed' ||
-      status == 'disconnected' ||
+      const {
+        'disconnected',
+        'channel_death',
+        'channel_closed',
+        'radio_search_timeout',
+        'radio_service_disconnected',
+        'training_service_destroyed',
+      }.contains(status) ||
       status.startsWith('link_lost')) {
     return TrainerConnection.error;
   }

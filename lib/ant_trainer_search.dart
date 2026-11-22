@@ -4,6 +4,15 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+class _DeferredSlope {
+  _DeferredSlope(this.percent, this.sessionId, this.generation);
+  final double percent;
+  final String? sessionId;
+  final int generation;
+  final requestedAtUtc = DateTime.now().toUtc().toIso8601String();
+  final done = Completer<void>();
+}
+
 class AntTrainerSearchController extends ChangeNotifier {
   AntTrainerSearchController({String channelName = 'openbkool/ant_search'})
     : channel = MethodChannel(channelName),
@@ -17,12 +26,122 @@ class AntTrainerSearchController extends ChangeNotifier {
   int _manualCommands = 0;
   int _manualGeneration = 0;
   bool manualStopping = false;
+  bool _slopePumping = false;
+  _DeferredSlope? _nextSlope, _activeSlope;
+  final _clientSlopeEvents = <Map<String, Object?>>[];
+  int _droppedClientSlopeEvents = 0;
+  bool get acceptingManualChanges => !commandBusy || _slopePumping;
+  num? get pendingManualPercent {
+    if (manualStopping || controlTransportUncertain || !running) return null;
+    final m = snapshot['manualControl'] as Map? ?? const {};
+    if (m['stopped'] == true ||
+        m['faulted'] == true ||
+        m['eligible'] == false) {
+      return null;
+    }
+    return _nextSlope?.percent ??
+        _activeSlope?.percent ??
+        (m['pendingManualChange'] as Map?)?['percent'] as num?;
+  }
+
+  void _clientEvent(String event, double? percent) {
+    _clientSlopeEvents.add({
+      'event': event,
+      'percent': percent,
+      'timestampUtc': DateTime.now().toUtc().toIso8601String(),
+      'sessionId': snapshot['sessionId'],
+    });
+    if (_clientSlopeEvents.length > 256) {
+      _clientSlopeEvents.removeAt(0);
+      _droppedClientSlopeEvents++;
+    }
+  }
+
+  void _cancelDeferredSlope(String reason) {
+    final pending = _nextSlope;
+    _nextSlope = null;
+    if (pending != null) {
+      _clientEvent(reason, pending.percent);
+      pending.done.complete();
+    }
+  }
+
+  Future<void> _queueSlope(double percent, String? sessionId) {
+    if (_disposed ||
+        manualStopping ||
+        controlTransportUncertain ||
+        !acceptingManualChanges) {
+      return Future.value();
+    }
+    final wanted = _DeferredSlope(
+      percent,
+      sessionId ?? snapshot['sessionId'] as String?,
+      _manualGeneration,
+    );
+    final previous = _nextSlope;
+    if (previous != null) {
+      _clientEvent('superseded_before_native', previous.percent);
+      previous.done.complete();
+    }
+    _nextSlope = wanted;
+    _clientEvent('selected_for_native', percent);
+    if (!_slopePumping) unawaited(_pumpSlopes());
+    _notify();
+    return wanted.done.future;
+  }
+
+  Future<void> _pumpSlopes() async {
+    _slopePumping = true;
+    try {
+      while (_nextSlope != null) {
+        final wanted = _nextSlope!;
+        _nextSlope = null;
+        if (_disposed ||
+            wanted.generation != _manualGeneration ||
+            wanted.sessionId != snapshot['sessionId'] ||
+            manualStopping ||
+            controlTransportUncertain ||
+            !running) {
+          wanted.done.complete();
+          _cancelDeferredSlope('cancelled_before_native');
+          break;
+        }
+        _activeSlope = wanted;
+        await _performManualAction(
+          'setManualSlope',
+          percent: wanted.percent,
+          expectedSessionId: wanted.sessionId,
+          requestedAtUtc: wanted.requestedAtUtc,
+        );
+        _activeSlope = null;
+        wanted.done.complete();
+        final m = snapshot['manualControl'] as Map? ?? const {};
+        if (m['stopped'] == true ||
+            m['faulted'] == true ||
+            m['eligible'] == false) {
+          _cancelDeferredSlope('native_link_or_control_invalid');
+        }
+      }
+    } finally {
+      _activeSlope = null;
+      _slopePumping = false;
+      _notify();
+    }
+  }
+
   Map<String, Object?> snapshot = {'status': 'not_started', 'running': false};
+  bool get backgroundAuthorized => snapshot['backgroundAuthorized'] == true;
   bool get running => snapshot['running'] == true;
   bool get controlTransportUncertain =>
       snapshot['controlTransportUncertain'] == true;
 
   void _notify() {
+    snapshot = {
+      ...snapshot,
+      'clientPendingManualPercent': pendingManualPercent,
+      'clientManualChanges': List.of(_clientSlopeEvents),
+      'droppedClientManualChanges': _droppedClientSlopeEvents,
+    };
     if (!_disposed) notifyListeners();
   }
 
@@ -42,6 +161,11 @@ class AntTrainerSearchController extends ChangeNotifier {
     final sameSession =
         incoming['sessionId'] != null &&
         incoming['sessionId'] == snapshot['sessionId'];
+    if (!sameSession ||
+        incoming['running'] == false ||
+        (incoming['manualControl'] as Map?)?['stopped'] == true) {
+      _cancelDeferredSlope('session_changed_or_closed');
+    }
     snapshot = {
       ...incoming,
       if (sameSession && controlTransportUncertain)
@@ -64,11 +188,17 @@ class AntTrainerSearchController extends ChangeNotifier {
             'controlTransportUncertain': true,
           };
           _notify();
-          if (running) unawaited(stop());
+          if (running && !backgroundAuthorized) unawaited(stop());
         },
       );
     }
     return _ready!.future.timeout(const Duration(seconds: 4));
+  }
+
+  Future<void> attachToTraining() async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      await _listen();
+    }
   }
 
   Future<void> start(String mode, {Map<String, Object?>? device}) async {
@@ -82,10 +212,16 @@ class AntTrainerSearchController extends ChangeNotifier {
         );
       }
       await _listen();
+      if (_disposed || (running && backgroundAuthorized)) return;
+      final training = mode == 'training' || mode == 'training_connected';
       _manualGeneration++;
+      _cancelDeferredSlope("new_session");
+      _clientSlopeEvents.clear();
+      _droppedClientSlopeEvents = 0;
       snapshot = {
         ...snapshot,
-        if (mode == 'training' || mode == 'training_connected') ...{
+        if (training) ...{
+          'backgroundAuthorized': false,
           'sessionId': null,
           'reportSequence': null,
           'identificationTiming': null,
@@ -142,7 +278,9 @@ class AntTrainerSearchController extends ChangeNotifier {
   }
 
   Future<void> stop({String reason = 'user_finish'}) async {
+    manualStopping = true;
     _manualGeneration++;
+    _cancelDeferredSlope(reason);
     commandBusy = true;
     _notify();
     try {
@@ -159,7 +297,8 @@ class AntTrainerSearchController extends ChangeNotifier {
         'resourcesReleased': null,
       };
     } finally {
-      commandBusy = false;
+      manualStopping = false;
+      commandBusy = _manualCommands > 0;
       _notify();
     }
   }
@@ -167,6 +306,31 @@ class AntTrainerSearchController extends ChangeNotifier {
   Future<void> manualAction(
     String method, {
     double? percent,
+    bool confirmed = false,
+    String controlMode = 'trial_30s',
+    bool experimentalConfirmed = false,
+    String? rangeProfile,
+    String? expectedSessionId,
+  }) {
+    if (method == 'setManualSlope' && percent != null) {
+      return _queueSlope(percent, expectedSessionId);
+    }
+    if (method == 'stopManualTest') _cancelDeferredSlope('manual_stop');
+    return _performManualAction(
+      method,
+      percent: percent,
+      confirmed: confirmed,
+      controlMode: controlMode,
+      experimentalConfirmed: experimentalConfirmed,
+      rangeProfile: rangeProfile,
+      expectedSessionId: expectedSessionId,
+    );
+  }
+
+  Future<void> _performManualAction(
+    String method, {
+    double? percent,
+    String? requestedAtUtc,
     bool confirmed = false,
     String controlMode = 'trial_30s',
     bool experimentalConfirmed = false,
@@ -195,6 +359,7 @@ class AntTrainerSearchController extends ChangeNotifier {
               'experimentalConfirmed': experimentalConfirmed,
             if (method == 'enableManualTest') 'rangeProfile': rangeProfile,
             'percent': ?percent,
+            'requestedAtUtc': ?requestedAtUtc,
           })
           .timeout(const Duration(seconds: 20));
       if (report != null && generation == _manualGeneration) _update(report);
@@ -217,7 +382,9 @@ class AntTrainerSearchController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    if (running) unawaited(stop(reason: 'controller_disposed'));
+    if (running && !backgroundAuthorized) {
+      unawaited(stop(reason: 'controller_disposed'));
+    }
     unawaited(_subscription?.cancel());
     super.dispose();
   }
