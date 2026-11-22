@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openbkool/ant_trainer_search.dart';
+import 'package:openbkool/trainer_session.dart';
 import 'package:openbkool/training.dart';
 
 void main() {
@@ -28,14 +29,13 @@ void main() {
       Map<String, Object?> report() => {
         'sessionId': 'sync',
         'reportSequence': ++sequence,
-        'running': !stopped,
+        'running': sequence > 1 && !stopped,
         'status': stopped ? 'manual_stop' : 'running',
         'manualControl': {
           'enabled': enabled,
           'eligible': true,
           'everEnabled': enabled || stopped,
           'stopped': stopped,
-          'remainingMs': stopped ? 0 : 20000,
           'lastRequestedPercent': selected,
           'lastSubmittedPercent': accepted,
           'lastManualApiSuccess': success,
@@ -63,8 +63,11 @@ void main() {
         },
       );
       messenger.setMockMethodCallHandler(c.channel, (call) async {
-        if (call.method == 'start') return null;
-        if (call.method == 'enableManualTest') {
+        if (call.method == 'start') {
+          await rx(report());
+          return null;
+        }
+        if (call.method == 'authorizeControl') {
           expect((call.arguments as Map)['confirmed'], true);
           enabled = true;
           history.add({'event': 'enabled'});
@@ -78,7 +81,7 @@ void main() {
             'stopRequest': false,
           };
           history.add(success!);
-        } else if (call.method == 'stopManualTest') {
+        } else if (call.method == 'stop') {
           stopped = true;
           enabled = false;
           stop = {
@@ -101,16 +104,16 @@ void main() {
         },
       );
       await tester.runAsync(() => start);
-      await c.manualAction(
-        'enableManualTest',
-        confirmed: true,
-        expectedSessionId: 'sync',
-      );
+      await c.authorizeControl('sync');
+      final session = TrainerSession(training: c);
       await tester.pumpWidget(
-        MaterialApp(home: TrainingPage(controller: c, simple: true)),
+        MaterialApp(home: TrainingPage(session: session)),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Pendiente ordenada: — %'), findsOneWidget);
+      expect(
+        find.text('Última pendiente aceptada por la API · —'),
+        findsOneWidget,
+      );
       for (final step in [
         ('+', '+0,5'),
         ('+', '+1,0'),
@@ -120,24 +123,33 @@ void main() {
         final old = Map<String, Object?>.from(c.snapshot);
         await tester.tap(find.widgetWithText(OutlinedButton, step.$1));
         await tester.pumpAndSettle();
-        expect(find.text('Pendiente ordenada: ${step.$2} %'), findsOneWidget);
+        expect(
+          find.text('Última pendiente aceptada por la API · ${step.$2} %'),
+          findsOneWidget,
+        );
         await rx(
           old,
         ); // Delayed pre-command telemetry snapshot must not roll back slope.
         await tester.pump();
-        expect(find.text('Pendiente ordenada: ${step.$2} %'), findsOneWidget);
+        expect(
+          find.text('Última pendiente aceptada por la API · ${step.$2} %'),
+          findsOneWidget,
+        );
         await rx({
           ...report(),
           'telemetry': {'signal': 'receiving', 'powerW': 150},
         });
         await tester.pump();
-        expect(find.text('Pendiente ordenada: ${step.$2} %'), findsOneWidget);
+        expect(
+          find.text('Última pendiente aceptada por la API · ${step.$2} %'),
+          findsOneWidget,
+        );
       }
-      await tester.tap(find.text('Detener control'));
+      await tester.tap(find.text('DETENER ENTRENAMIENTO'));
       await tester.pumpAndSettle();
       expect(
         find.text(
-          'Control finalizado · Se solicitó 0 % · Resistencia actual desconocida',
+          '0 % solicitado al detener. Resistencia física sin confirmar.',
         ),
         findsOneWidget,
       );
@@ -150,7 +162,7 @@ void main() {
         [0.5, 1.0, 0.5, 0.0],
       );
       await tester.pumpWidget(const SizedBox());
-      c.dispose();
+      session.dispose();
       debugDefaultTargetPlatformOverride = null;
       messenger.setMockMethodCallHandler(c.channel, null);
       messenger.setMockMethodCallHandler(

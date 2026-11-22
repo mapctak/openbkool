@@ -1,60 +1,24 @@
 # OpenBkool
 
-Entrenamiento libre con un Bkool Smart Pro v1 mediante ANT propietario,
-con Flutter y Kotlin. Inicio permite conectar directamente al rodillo recordado;
-Entrenamiento libre muestra potencia, cadencia, velocidad, distancia y tiempo.
-El control manual sigue siendo una prueba opcional de 0–1 %, habilitada
-expresamente por sesión y limitada a 30 segundos.
+**ENTRENAMIENTO LIBRE** conecta con el Bkool Smart Pro v1 por ANT propietario.
+Muestra velocidad, potencia, cadencia, distancia y tiempo. La autorización
+explícita habilita las 41 pendientes de −5 % a +15 % en pasos de 0,5 % para esa
+sesión. Las pendientes negativas y superiores a +3 % siguen siendo experimentales.
 
-Las herramientas BLE (`flutter_blue_plus 2.3.14`), ANT, registros y exportaciones
-siguen en **Ajustes → Diagnósticos avanzados**.
+Mantén OpenBkool visible durante el entrenamiento. Bloquear la pantalla,
+cambiar de aplicación o salir del entrenamiento solicita la parada nativa.
+Puedes copiar el CSV al finalizar y el JSON desde la sesión. [Entrenamiento libre y validación](docs/entrenamiento_libre_1_5.md).
 
-[Interfaz OpenBkool 1.1, arquitectura y validación](docs/interfaz_openbkool_1_1.md).
-
-Busca durante 30 segundos sin filtros y muestra todos los dispositivos, con o sin
-nombre, sus identificadores, RSSI y UUID anunciados. Destaca pistas `bkool` y
-Cycling Power `0x1818`; permite conectar manualmente con cualquiera para enumerar
-GATT y comprobar el servicio propietario Bkool. No realiza escrituras GATT
-ni activa notificaciones ni modifica firmware.
-
-En Android permite dispositivos cercanos y ubicación precisa, y activa Bluetooth
-y los servicios de ubicación. La app solicita ubicación para evitar el filtrado
-de algunas balizas; no consulta el GPS. Un rodillo solo ANT/ANT+ no aparecerá
-con un escáner BLE.
-
-«Exportar diagnóstico JSON» copia anuncios, descubrimientos y eventos al
-portapapeles, incluso sin dispositivos o sin conexión GATT. Pégalo en un archivo
-`.json`. Los resultados permanecen durante la sesión; al cerrar la app se pierden.
+Inicio permite seleccionar o buscar el rodillo recordado. **Ajustes →
+Diagnósticos avanzados** conserva la inspección de capacidades ANT, el escaneo
+BLE y la exportación de un JSON combinado. La búsqueda ANT solamente recibe.
+BLE enumera GATT sin escrituras, notificaciones ni DFU. [Búsqueda ANT](docs/deteccion_rodillos_ant.md) · [Diagnóstico ANT](docs/diagnostico_ant.md) · [Detección BLE](docs/deteccion_ble.md).
 
 ```sh
 flutter analyze
 flutter test
+(cd android && ./gradlew :app:testDebugUnitTest)
 flutter build apk --debug
 ```
 
-APK: `build/app/outputs/flutter-apk/app-debug.apk`.
-
-- [Implementación, validación y limitaciones de detección](docs/deteccion_ble.md).
-- [Investigación estática del protocolo Bkool](docs/protocolo_bkool.md).
-
-También está disponible «Diagnóstico ANT+»: consulta hardware declarado,
-servicios instalados, proveedores, adaptadores y acceso temporal a una radio sin
-abrir canales ni buscar el rodillo. Sus resultados se incluyen en el mismo JSON.
-Consulta [implementación y límites ANT](docs/diagnostico_ant.md).
-
-«Buscar rodillos ANT» permite buscar FE-C y Bkool V1 público de forma secuencial,
-ver identificación y tramas V1 recibidas, detener y exportar el informe combinado.
-No envía páginas de control. Bkool V2 sigue desactivado.
-[Resultados y limitaciones de búsqueda ANT](docs/deteccion_rodillos_ant.md).
-
-«Entrenamiento» recibe telemetría del Smart Pro v1 confirmado (ANT público,
-ID 30064/112/5): velocidad, potencia, cadencia y distancia, con detección de
-pérdida de señal. Al finalizar permite copiar el registro CSV. El control real requiere habilitación y confirmación explícitas por sesión. [Formatos, capturas, pruebas y limitaciones](docs/telemetria_ant.md).
-
-- [Icono original SVG, generación Android y comprobaciones](docs/icono_openbkool.md).
-
-- [Preparación bidireccional ANT V1, sin comandos, y plan de primera prueba](docs/control_ant_preparacion.md).
-
-- [Primera prueba manual de pendiente ANT: activación, límites, parada y JSON](docs/control_manual_ant.md).
-
-- [Pendiente solicitada, envío a ANT y parada: corrección visual 1.1.1](docs/pendiente_interfaz_1_1_1.md).
+La APK de depuración queda en `build/app/outputs/flutter-apk/app-debug.apk`.

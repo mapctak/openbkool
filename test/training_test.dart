@@ -1,532 +1,135 @@
 import 'dart:convert';
-import 'dart:io';
-import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openbkool/ant_trainer_search.dart';
+import 'package:openbkool/trainer_session.dart';
 import 'package:openbkool/training.dart';
 
 void main() {
-  TestWidgetsFlutterBinding.ensureInitialized();
-  testWidgets('shows native telemetry, stops and exports CSV', (tester) async {
-    final c = AntTrainerSearchController(channelName: 'openbkool/training');
-    c.snapshot = {
-      'running': true,
-      'status': 'running',
-      'telemetry': {
-        'signal': 'receiving',
-        'speedKmh': 12.4632,
-        'powerW': 29,
-        'cadenceRpm': 23,
-        'distanceM': 4,
-      },
-    };
-    final calls = <String>[];
-    String? copied;
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
-          if (call.method == 'Clipboard.setData') {
-            copied = (call.arguments as Map)['text'] as String;
-          }
-          return null;
-        });
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(c.channel, (call) async {
-          calls.add(call.method);
-          if (call.method == 'stop') {
-            return {
-              ...c.snapshot,
-              'running': false,
-              'status': 'stopped',
-              'resourcesReleased': true,
-              'csvFile': 'test.csv',
-            };
-          }
-          if (call.method == 'exportCsv') {
-            return 'timestamp_utc,power_w\r\n2026-11-13,29\r\n';
-          }
-          throw StateError('Unexpected method ${call.method}');
-        });
-    await tester.pumpWidget(MaterialApp(home: TrainingPage(controller: c)));
-    expect(find.text('12.5 km/h'), findsOneWidget);
-    expect(find.text('29 W'), findsOneWidget);
-    expect(find.text('23 RPM'), findsOneWidget);
-    await tester.scrollUntilVisible(
-      find.text('Finalizar entrenamiento'),
-      200,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Finalizar entrenamiento'));
-    await tester.pumpAndSettle();
-    expect(c.running, false);
-    expect(c.snapshot['resourcesReleased'], true);
-    await tester.drag(find.byType(ListView), const Offset(0, -350));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.text('Exportar CSV al portapapeles'),
-      200,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Exportar CSV al portapapeles'));
-    await tester.pumpAndSettle();
-    expect(calls, ['stop', 'exportCsv']);
-    expect(copied, contains('2026-11-13,29'));
-    expect(find.text('CSV copiado al portapapeles'), findsOneWidget);
-    await tester.pumpWidget(const SizedBox());
-    c.dispose();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(c.channel, null);
-  });
-  testWidgets('lost signal displays missing metrics and partial distance', (
-    tester,
-  ) async {
-    final c = AntTrainerSearchController(channelName: 'openbkool/training');
-    c.snapshot = {
-      'running': true,
-      'telemetry': {
-        'signal': 'signal_lost',
-        'distanceM': 10,
-        'distancePartial': true,
-      },
-    };
-    await tester.pumpWidget(MaterialApp(home: TrainingPage(controller: c)));
-    expect(find.text('— km/h'), findsOneWidget);
-    expect(find.text('— W'), findsOneWidget);
-    expect(find.textContaining('Distancia parcial:'), findsOneWidget);
-    c.snapshot = {'running': false};
-    await tester.pumpWidget(const SizedBox());
-    c.dispose();
-  });
   testWidgets(
-    'manual control disabled and dedicated mode is explicit with selected identity',
+    'the full selector requires consent, reports background stop and exports',
     (tester) async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      addTearDown(() => debugDefaultTargetPlatformOverride = null);
-      final c = AntTrainerSearchController(channelName: 'openbkool/training');
-      final search = AntTrainerSearchController();
-      search.snapshot = {
-        'devices': [
-          {
-            'protocol': 'BKOOL_V1_PUBLIC',
-            'deviceNumber': 123,
-            'deviceType': 112,
-            'transmissionType': 6,
-          },
-        ],
-      };
-      final calls = <MethodCall>[];
+      await tester.binding.setSurfaceSize(const Size(1000, 1800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      const eventChannel = MethodChannel('openbkool/training/events');
-      messenger.setMockMethodCallHandler(eventChannel, (call) async {
-        if (call.method == 'listen') {
-          scheduleMicrotask(() {
-            messenger.handlePlatformMessage(
-              'openbkool/training/events',
-              const StandardMethodCodec().encodeSuccessEnvelope({
-                'status': 'not_started',
-                'running': false,
-              }),
-              (_) {},
-            );
-          });
-        }
-        return null;
-      });
-      messenger.setMockMethodCallHandler(c.channel, (call) async {
-        calls.add(call);
-        return null;
-      });
-      await tester.pumpWidget(
-        MaterialApp(
-          home: TrainingPage(controller: c, searchController: search),
-        ),
-      );
-      expect(calls, isEmpty);
-      await tester.scrollUntilVisible(
-        find.byKey(const ValueKey('trainerSelector')),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(const ValueKey('trainerSelector')));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('123:112:6').last);
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('Iniciar entrenamiento'),
-        -200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Iniciar entrenamiento'));
-      await tester.pumpAndSettle();
-      expect(calls.length, 1);
-      expect(calls.single.method, 'start');
-      expect(calls.single.arguments, {
-        'mode': 'training_connected',
-        'device': {
-          'protocol': 'BKOOL_V1_PUBLIC',
-          'deviceNumber': 123,
-          'deviceType': 112,
-          'transmissionType': 6,
-        },
-      });
-      await tester.scrollUntilVisible(
-        find.byType(CheckboxListTile),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        false,
-      );
-      expect(
-        tester
-            .widget<CheckboxListTile>(find.byType(CheckboxListTile))
-            .onChanged,
-        isNull,
-      );
-      await tester.scrollUntilVisible(
-        find.widgetWithText(OutlinedButton, '+'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      expect(
-        tester
-            .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '+'))
-            .onPressed,
-        isNull,
-      );
-      c.snapshot = {'running': false};
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-      search.dispose();
-      await tester.pump();
-      messenger.setMockMethodCallHandler(c.channel, null);
-      messenger.setMockMethodCallHandler(eventChannel, null);
-      debugDefaultTargetPlatformOverride = null;
-    },
-  );
-  testWidgets(
-    'real control needs confirmation; increments and stop use session token; JSON is exportable',
-    (tester) async {
       final c = AntTrainerSearchController(channelName: 'openbkool/training');
-      c.snapshot = {
-        'sessionId': 'test-session',
+      final session = TrainerSession(training: c);
+      const stream = MethodChannel('openbkool/training/events');
+      final calls = <MethodCall>[];
+      final copied = <String>[];
+      final initial = <String, Object?>{
         'running': true,
+        'sessionId': 'session',
+        'selectedDevice': SavedTrainer.known.device,
+        'connectionState': 'identity_verified',
+        'telemetry': {'signal': 'receiving', 'speedKmh': 12, 'partial': true},
         'manualControl': {'eligible': true, 'enabled': false},
       };
-      final calls = <MethodCall>[];
-      String? copied;
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
-        if (call.method == 'Clipboard.setData') {
-          copied = (call.arguments as Map)['text'] as String;
-        }
-        return null;
-      });
-      messenger.setMockMethodCallHandler(c.channel, (call) async {
-        calls.add(call);
-        expect((call.arguments as Map)['sessionId'], 'test-session');
-        if (call.method == 'enableManualTest') {
-          expect((call.arguments as Map)['confirmed'], true);
-          return {
-            ...c.snapshot,
-            'manualControl': {
-              'eligible': true,
-              'enabled': true,
-              'everEnabled': true,
-              'remainingMs': 30000,
-            },
-          };
-        }
-        if (call.method == 'setManualSlope') {
-          return {
-            ...c.snapshot,
-            'manualControl': {
-              'eligible': true,
-              'enabled': true,
-              'everEnabled': true,
-              'remainingMs': 29000,
-              'lastSubmittedPercent': (call.arguments as Map)['percent'],
-            },
-            'manualControlEvents': [
-              {'event': 'api_returned', 'physicalApplication': 'unconfirmed'},
-            ],
-          };
-        }
-        if (call.method == 'stopManualTest') {
-          return {
-            ...c.snapshot,
-            'running': false,
-            'resourcesReleased': true,
-            'manualControl': {
-              'enabled': false,
-              'everEnabled': true,
-              'stopped': true,
-              'stopResult': 'zero_api_returned_unconfirmed',
-            },
-          };
-        }
-        throw StateError('Unexpected method');
-      });
-      await tester.pumpWidget(MaterialApp(home: TrainingPage(controller: c)));
-      expect(calls, isEmpty);
-      await tester.scrollUntilVisible(
-        find.byType(CheckboxListTile),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.byType(CheckboxListTile));
-      await tester.pumpAndSettle();
-      expect(calls, isEmpty);
-      await tester.tap(find.text('Cancelar'));
-      await tester.pumpAndSettle();
-      expect(calls, isEmpty);
-      await tester.tap(find.byType(CheckboxListTile));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Habilitar prueba'));
-      await tester.pumpAndSettle();
-      expect(calls.map((e) => e.method), ['enableManualTest']);
-      await tester.scrollUntilVisible(
-        find.widgetWithText(OutlinedButton, '+'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(OutlinedButton, '+'));
-      await tester.pumpAndSettle();
-      expect((calls.last.arguments as Map)['percent'], 0.5);
-      await tester.tap(find.widgetWithText(OutlinedButton, '+'));
-      await tester.pumpAndSettle();
-      expect((calls.last.arguments as Map)['percent'], 1.0);
-      expect(
-        tester
-            .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '+'))
-            .onPressed,
-        isNull,
-      );
-      await tester.tap(find.text('Detener control'));
-      await tester.pumpAndSettle();
-      expect(calls.last.method, 'stopManualTest');
-      expect(c.snapshot['resourcesReleased'], true);
-      await tester.scrollUntilVisible(
-        find.text('Exportar diagnóstico JSON'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Exportar diagnóstico JSON'));
-      await tester.pumpAndSettle();
-      expect(copied, contains('zero_api_returned_unconfirmed'));
-      expect(copied, contains('manualControlEvents'));
-      expect(calls.any((e) => e.method == 'start'), false);
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
-      messenger.setMockMethodCallHandler(c.channel, null);
-      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
-    },
-  );
-  testWidgets(
-    'stop bypasses a pending command and late response cannot revive stopped session',
-    (tester) async {
-      final c = AntTrainerSearchController(channelName: 'openbkool/training');
-      c.snapshot = {'sessionId': 'pending-session', 'running': true};
-      final pending = Completer<Map<String, Object?>>();
-      final calls = <String>[];
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(c.channel, (call) async {
-        calls.add(call.method);
-        if (call.method == 'setManualSlope') return pending.future;
-        return {
-          'sessionId': 'pending-session',
-          'running': false,
-          'resourcesReleased': true,
-        };
-      });
-      final request = c.manualAction('setManualSlope', percent: 0.5);
-      await tester.pump();
-      expect(c.commandBusy, true);
-      final stopping = c.manualAction('stopManualTest');
-      await tester.pump();
-      await stopping;
-      expect(calls, ['setManualSlope', 'stopManualTest']);
-      expect(c.running, false);
-      pending.complete({'sessionId': 'pending-session', 'running': true});
-      await tester.pump();
-      await request;
-      expect(c.running, false);
-      expect(c.commandBusy, false);
-      c.dispose();
-      messenger.setMockMethodCallHandler(c.channel, null);
-    },
-  );
-  testWidgets(
-    'S20 blocker is visible and stream updates open eligibility only after full native verification',
-    (tester) async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      addTearDown(() => debugDefaultTargetPlatformOverride = null);
-      final c = AntTrainerSearchController(channelName: 'openbkool/training');
-      final real = Map<String, Object?>.from(
-        jsonDecode(
-          File('test/fixtures/manual_control_blocked_s20.json')
-              .readAsStringSync(),
-        ) as Map,
-      );
-      c.snapshot = real;
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      const events = MethodChannel('openbkool/training/events');
-      final calls = <MethodCall>[];
-      void push(Map<String, Object?> data) {
-        messenger.handlePlatformMessage(
-          'openbkool/training/events',
-          const StandardMethodCodec().encodeSuccessEnvelope(data),
+      Future<void> publish(Map<String, Object?> report) async {
+        await messenger.handlePlatformMessage(
+          stream.name,
+          const StandardMethodCodec().encodeSuccessEnvelope(report),
           (_) {},
         );
       }
 
-      messenger.setMockMethodCallHandler(events, (call) async {
-        if (call.method == 'listen') scheduleMicrotask(() => push(real));
-        return null;
-      });
+      messenger.setMockMethodCallHandler(stream, (call) async => null);
       messenger.setMockMethodCallHandler(c.channel, (call) async {
         calls.add(call);
-        if (call.method == 'stop') return {...real, 'running': false};
-        if (call.method == 'start') {
-          expect(call.arguments, {
-            'mode': 'training_connected',
-            'device': {
-              'protocol': 'BKOOL_V1_PUBLIC',
-              'deviceNumber': 30064,
-              'deviceType': 112,
-              'transmissionType': 5,
-            },
-          });
-          expect(c.snapshot['manualControl'], {
-            'enabled': false,
-            'eligible': false,
-            'unavailableReason': 'starting',
-          });
-          expect(c.snapshot['sessionId'], isNull);
-          expect(c.snapshot['telemetry'], isNull);
+        if (call.method == 'exportCsv') {
+          return 'event\nfinished:app_background\n';
+        }
+        return {
+          ...initial,
+          'manualControl': {'enabled': true, 'eligible': true},
+        };
+      });
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add((call.arguments as Map)['text'] as String);
         }
         return null;
       });
-      await tester.pumpWidget(MaterialApp(home: TrainingPage(controller: c)));
-      await tester.scrollUntilVisible(
-        find.byType(CheckboxListTile),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<CheckboxListTile>(find.byType(CheckboxListTile))
-            .onChanged,
-        isNull,
-      );
-      expect(find.textContaining('dedicated_channel_required'), findsOneWidget);
-      await c.stop();
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('Iniciar entrenamiento'),
-        -200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Iniciar entrenamiento'));
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.byType(CheckboxListTile),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.textContaining('Activación bloqueada [starting]'),
-        findsOneWidget,
-      );
-      final connected = <String, Object?>{
-        ...real,
-        'sessionId': 'new-session',
-        'controlDiagnosticsVersion': 2,
-        'mode': 'training_connected',
-        'channelMode': 'dedicated_bidirectional_manual_opt_in',
-        'manualControl': {
-          'enabled': false,
-          'eligible': false,
-          'unavailableReason': 'manufacturer_model_not_verified',
-        },
-      };
-      push(connected);
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<CheckboxListTile>(find.byType(CheckboxListTile))
-            .onChanged,
-        isNull,
-      );
-      expect(find.textContaining('Esperando la página 0x50'), findsOneWidget);
-      push({
-        ...connected,
-        'manualControl': {
-          'enabled': false,
-          'eligible': true,
-          'remainingMs': null,
-          'maxDurationMs': 30000,
-        },
-      });
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<CheckboxListTile>(find.byType(CheckboxListTile))
-            .onChanged,
-        isNotNull,
-      );
-      expect(
-        tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        false,
-      );
-      expect(find.textContaining('Condiciones cumplidas'), findsOneWidget);
-      expect(
-        find.textContaining('Diagnóstico de control · Kotlin:'),
-        findsOneWidget,
-      );
-      expect(calls.map((call) => call.method), ['stop', 'start']);
-      push({
-        ...connected,
-        'manualControl': {
-          'enabled': false,
-          'eligible': false,
-          'unavailableReason': 'signal_not_fresh',
-        },
-      });
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<CheckboxListTile>(find.byType(CheckboxListTile))
-            .onChanged,
-        isNull,
-      );
-      expect(find.textContaining('menos de 3 segundos'), findsOneWidget);
-      c.snapshot = {'running': false};
-      await tester.pumpWidget(const SizedBox());
-      c.dispose();
+      final listen = c.attachToTraining();
       await tester.pump();
-      messenger.setMockMethodCallHandler(c.channel, null);
-      messenger.setMockMethodCallHandler(events, null);
-      debugDefaultTargetPlatformOverride = null;
+      await publish(initial);
+      await listen;
+      await tester.pumpWidget(
+        MaterialApp(home: TrainingPage(session: session)),
+      );
+      final selector = find.byKey(const ValueKey('trainingSlope'));
+      var dropdown = tester.widget<DropdownButton<double>>(selector);
+      expect(
+        dropdown.items!.map((item) => item.value),
+        List.generate(41, (i) => -5 + 0.5 * i),
+      );
+      expect(dropdown.onChanged, isNull);
+      await tester.tap(find.text('Autorizar rango completo'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancelar'));
+      await tester.pumpAndSettle();
+      expect(calls, isEmpty);
+      await tester.tap(find.text('Autorizar rango completo'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Autorizar sesión'));
+      await tester.pumpAndSettle();
+      expect(calls.single.method, 'authorizeControl');
+      expect(calls.single.arguments, {
+        'sessionId': 'session',
+        'confirmed': true,
+      });
+      dropdown = tester.widget<DropdownButton<double>>(selector);
+      expect(dropdown.onChanged, isNotNull);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      await tester.pump();
+      expect(calls, hasLength(1)); // Android owns the background decision.
+      await publish({
+        ...initial,
+        'running': false,
+        'status': 'app_background',
+        'csvFile': 'training.csv',
+        'events': [
+          {
+            'event': 'android_lifecycle',
+            'details': {'decision': 'app_background'},
+          },
+        ],
+        'manualControl': {
+          'state': 'stopped',
+          'stopped': true,
+          'stopReason': 'app_background',
+        },
+      });
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(tester.widget<DropdownButton<double>>(selector).onChanged, isNull);
+      expect(
+        find.text('Motivo de parada · app en segundo plano'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Bloquear la pantalla'), findsOneWidget);
+      await tester.tap(find.text('Copiar CSV'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Copiar JSON'));
+      await tester.pumpAndSettle();
+      expect(copied.first, contains('finished:app_background'));
+      expect(
+        jsonDecode(copied.last)['events'].single['details']['decision'],
+        'app_background',
+      );
+      expect(calls.map((call) => call.method), [
+        'authorizeControl',
+        'exportCsv',
+      ]);
+      await tester.pumpWidget(const SizedBox());
+      session.dispose();
+      for (final channel in [stream, c.channel, SystemChannels.platform]) {
+        messenger.setMockMethodCallHandler(channel, null);
+      }
     },
+    variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
 }

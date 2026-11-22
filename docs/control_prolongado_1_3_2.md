@@ -1,5 +1,7 @@
 # Control prolongado de carga baja — OpenBkool 1.3.2+17
 
+> Registro histórico. La política actual se describe en [Entrenamiento libre 1.5](entrenamiento_libre_1_5.md).
+
 ## Decisión técnica (16 de noviembre de 2026)
 
 Se habilita **una primera sesión física prolongada supervisada, exclusivamente

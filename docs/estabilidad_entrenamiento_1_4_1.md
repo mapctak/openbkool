@@ -1,5 +1,7 @@
 # Estabilidad del entrenamiento ANT en 1.4.1
 
+> Registro histórico. La política actual se describe en [Entrenamiento libre 1.5](entrenamiento_libre_1_5.md).
+
 El 20 de noviembre de 2026, el CSV del Galaxy S20 registró el cierre a las
 19:24:19 UTC tras 13:39 de sesión. La potencia llevaba 12.015 ms sin actualizarse,
 la velocidad 3.015 ms y el rodillo todavía enviaba páginas ANT, incluida 0x54.

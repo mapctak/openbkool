@@ -3,7 +3,7 @@ package com.example.openbkool
 import org.junit.Assert.*
 import org.junit.Test
 
-class AntControlPreparationTest {
+class AntTrainerIdentityTest {
     private val target = AntTrainerIdentity(30064, 112, 5)
     private class Channel(val failOn: String? = null) : V1DedicatedChannel {
         val calls = mutableListOf<String>()
@@ -52,37 +52,6 @@ class AntControlPreparationTest {
         assertFalse(t.accepts(AntReceivedFrame(123,112,5, ByteArray(8))))
         assertFalse(t.accepts(AntReceivedFrame(123,17,6, ByteArray(8))))
         assertTrue(t.accepts(AntReceivedFrame(123,112,6, ByteArray(8))))
-    }
-    @Test fun dryRunEndpointsAreExactAndAlwaysBlocked() {
-        val p = ManualSlopePreparation(target)
-        assertEquals("not_connected", p.prepare(0.0,0)["state"])
-        p.connectionVerified(true)
-        val zero = p.prepare(0.0,0)
-        assertEquals("33 FF FF FF FF 20 4E FF", zero["candidatePayloadHex"])
-        assertEquals(false, zero["sent"])
-        assertEquals("duplicate", p.prepare(0.0,2000)["state"])
-        val one = p.prepare(1.0,2000)
-        assertEquals("33 FF FF FF FF 84 4E FF", one["candidatePayloadHex"])
-        assertEquals(false, one["transmissionEnabled"])
-        assertEquals("rate_limited", p.prepare(0.5,2100)["state"])
-    }
-    @Test fun invalidGradesDisconnectStopAndFreshSessionNeverSendOrQueue() {
-        val p = ManualSlopePreparation(target)
-        p.connectionVerified(true)
-        for (v in listOf(Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, -0.01, 1.01)) {
-            val plan = p.prepare(v,0)
-            assertEquals("invalid_range", plan["state"]); assertNull(plan["candidatePayloadHex"])
-            assertEquals(false, plan["sent"])
-        }
-        assertEquals("unsupported_precision", p.prepare(0.005,0)["state"])
-        p.prepare(0.0,0)
-        p.connectionVerified(false)
-        assertEquals("not_connected", p.prepare(1.0,2000)["state"])
-        p.stop(); p.connectionVerified(true)
-        assertEquals("session_stopped", p.prepare(1.0,3000)["state"])
-        assertEquals(0, p.snapshot()["pendingCommands"])
-        assertEquals("unknown", p.snapshot()["resistanceAfterClose"])
-        assertEquals("not_connected", ManualSlopePreparation(target).prepare(1.0,4000)["state"])
     }
     @Test fun coordinatorPreventsOverlappingHandoffs() {
         val scan = Any(); val connection = Any()

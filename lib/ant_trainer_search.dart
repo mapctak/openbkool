@@ -145,7 +145,6 @@ class AntTrainerSearchController extends ChangeNotifier {
 
   Map<String, Object?> snapshot = {'status': 'not_started', 'running': false};
   bool get _nativeTrainingLifecycle => channel.name == 'openbkool/training';
-  bool get backgroundAuthorized => snapshot['backgroundAuthorized'] == true;
   bool get running => snapshot['running'] == true;
   bool get controlTransportUncertain =>
       snapshot['controlTransportUncertain'] == true;
@@ -227,8 +226,8 @@ class AntTrainerSearchController extends ChangeNotifier {
         );
       }
       await _listen();
-      if (_disposed || (running && backgroundAuthorized)) return;
-      final training = mode == 'training' || mode == 'training_connected';
+      if (_disposed || running) return;
+      final training = mode == 'training_connected';
       _manualGeneration++;
       _cancelDeferredSlope("new_session");
       _clientSlopeEvents.clear();
@@ -236,14 +235,10 @@ class AntTrainerSearchController extends ChangeNotifier {
       snapshot = {
         ...snapshot,
         if (training) ...{
-          'backgroundAuthorized': false,
           'sessionId': null,
           'reportSequence': null,
           'identificationTiming': null,
           'transmissionDiagnostics': null,
-          'manualSessionPolicy': null,
-          'refreshTrialPolicy': null,
-          'lowLoadPolicy': null,
           'radioCaptureCorrelation': null,
           'controlTransportUncertain': false,
           'manualControl': <String, Object?>{
@@ -252,7 +247,6 @@ class AntTrainerSearchController extends ChangeNotifier {
             'unavailableReason': 'starting',
           },
           'manualControlEvents': <Object?>[],
-          'controlPreparation': null,
           'channelIdentity': null,
           'startedAt': null,
           'updatedAt': null,
@@ -263,9 +257,7 @@ class AntTrainerSearchController extends ChangeNotifier {
           'telemetry': null,
           'devices': <Object?>[],
           'connectionState': 'waiting_for_identity',
-          'channelMode': mode == 'training_connected'
-              ? 'dedicated_bidirectional_manual_opt_in'
-              : 'background_receive_only',
+          'channelMode': 'dedicated_bidirectional_manual_opt_in',
           'selectedDevice': device,
           'csvFile': null,
         },
@@ -295,6 +287,7 @@ class AntTrainerSearchController extends ChangeNotifier {
   }
 
   Future<void> stop({String reason = 'user_finish'}) async {
+    if (manualStopping) return;
     manualStopping = true;
     _manualGeneration++;
     _cancelDeferredSlope(reason);
@@ -315,35 +308,22 @@ class AntTrainerSearchController extends ChangeNotifier {
       };
     } finally {
       manualStopping = false;
-      commandBusy = _manualCommands > 0;
+      commandBusy = manualStopping || _manualCommands > 0;
       _notify();
     }
   }
 
-  Future<void> manualAction(
-    String method, {
-    double? percent,
+  Future<void> authorizeControl(String sessionId) => _performManualAction(
+    'authorizeControl',
+    confirmed: true,
+    expectedSessionId: sessionId,
+  );
+
+  Future<void> requestSlope(
+    double percent, {
+    required String? sessionId,
     bool rapidAdjustment = false,
-    bool confirmed = false,
-    String controlMode = 'trial_30s',
-    bool experimentalConfirmed = false,
-    String? rangeProfile,
-    String? expectedSessionId,
-  }) {
-    if (method == 'setManualSlope' && percent != null) {
-      return _queueSlope(percent, expectedSessionId, rapidAdjustment);
-    }
-    if (method == 'stopManualTest') _cancelDeferredSlope('manual_stop');
-    return _performManualAction(
-      method,
-      percent: percent,
-      confirmed: confirmed,
-      controlMode: controlMode,
-      experimentalConfirmed: experimentalConfirmed,
-      rangeProfile: rangeProfile,
-      expectedSessionId: expectedSessionId,
-    );
-  }
+  }) => _queueSlope(percent, sessionId, rapidAdjustment);
 
   Future<void> _performManualAction(
     String method, {
@@ -352,19 +332,9 @@ class AntTrainerSearchController extends ChangeNotifier {
     int? uiQueueMs,
     bool rapidAdjustment = false,
     bool confirmed = false,
-    String controlMode = 'trial_30s',
-    bool experimentalConfirmed = false,
-    String? rangeProfile,
     String? expectedSessionId,
   }) async {
-    final stopping = method == 'stopManualTest';
-    if (!stopping && controlTransportUncertain) return;
-    if (stopping && manualStopping) return;
-    if (commandBusy && !stopping) return;
-    if (stopping) {
-      manualStopping = true;
-      _manualGeneration++;
-    }
+    if (controlTransportUncertain || commandBusy || manualStopping) return;
     final generation = _manualGeneration;
     _manualCommands++;
     commandBusy = true;
@@ -374,10 +344,6 @@ class AntTrainerSearchController extends ChangeNotifier {
           .invokeMapMethod<String, dynamic>(method, {
             'sessionId': expectedSessionId ?? snapshot['sessionId'],
             'confirmed': confirmed,
-            if (method == 'enableManualTest') 'controlMode': controlMode,
-            if (method == 'enableManualTest')
-              'experimentalConfirmed': experimentalConfirmed,
-            if (method == 'enableManualTest') 'rangeProfile': rangeProfile,
             'percent': ?percent,
             'requestedAtUtc': ?requestedAtUtc,
             'uiQueueMs': ?uiQueueMs,
@@ -394,9 +360,8 @@ class AntTrainerSearchController extends ChangeNotifier {
         };
       }
     } finally {
-      if (stopping) manualStopping = false;
       _manualCommands--;
-      commandBusy = _manualCommands > 0;
+      commandBusy = manualStopping || _manualCommands > 0;
       _notify();
     }
   }

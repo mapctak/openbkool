@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openbkool/ant_trainer_search.dart';
-import 'package:openbkool/manual_ride.dart';
+import 'package:openbkool/trainer_session.dart';
+import 'package:openbkool/training.dart';
 
 class LatestUiController extends AntTrainerSearchController {
   LatestUiController() : super(channelName: 'openbkool/latest-ui-sim');
@@ -50,15 +51,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       MaterialApp(
-        home: ManualRidePage(
-          controller: c,
-          device: const {
-            'protocol': 'BKOOL_V1_PUBLIC',
-            'deviceNumber': 30064,
-            'deviceType': 112,
-            'transmissionType': 5,
-          },
-        ),
+        home: TrainingPage(session: TrainerSession(training: c)),
       ),
     );
     await tester.pumpAndSettle();
@@ -73,7 +66,7 @@ void main() {
 
   void select(WidgetTester tester, double p) => tester
       .widget<DropdownButton<double>>(
-        find.byKey(const ValueKey('manualRideSlope')),
+        find.byKey(const ValueKey('trainingSlope')),
       )
       .onChanged!(p);
 
@@ -87,7 +80,7 @@ void main() {
         return report();
       });
       await show(tester, c);
-      await tester.tap(find.widgetWithText(FilledButton, '+'));
+      await tester.tap(find.widgetWithText(OutlinedButton, '+'));
       await tester.pumpAndSettle();
       select(tester, 3);
       await tester.pumpAndSettle();
@@ -120,17 +113,26 @@ void main() {
       await tester.pump();
       expect(calls.length, 1);
       expect(c.pendingManualPercent, 0);
-      expect(find.text('Pendiente ordenada: +3,0 %'), findsOneWidget);
-      expect(find.textContaining('LLANO pendiente:'), findsOneWidget);
+      expect(
+        find.text('Última pendiente aceptada por la API · +3,0 %'),
+        findsOneWidget,
+      );
+      expect(find.text('Cambio pendiente · 0,0 %'), findsOneWidget);
       first.complete(report(pending: 2));
       await tester.pumpAndSettle();
       expect(calls.map((e) => (e.arguments as Map)['percent']), [2, 0]);
-      expect(find.text('Pendiente ordenada: +3,0 %'), findsOneWidget);
+      expect(
+        find.text('Última pendiente aceptada por la API · +3,0 %'),
+        findsOneWidget,
+      );
       expect(c.pendingManualPercent, 0);
       c.emit(report(accepted: 0));
       await tester.pumpAndSettle();
-      expect(find.text('Pendiente ordenada: 0,0 %'), findsOneWidget);
-      expect(find.text('Cambio pendiente: ninguno'), findsOneWidget);
+      expect(
+        find.text('Última pendiente aceptada por la API · 0,0 %'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Cambio pendiente ·'), findsNothing);
       expect(
         (c.snapshot['clientManualChanges'] as List).any(
           (e) => (e as Map)['event'] == 'superseded_before_native',
@@ -158,11 +160,11 @@ void main() {
       await tester.pump();
       select(tester, 0);
       await tester.pump();
-      await tester.tap(find.text('DETENER CONTROL'));
+      await tester.tap(find.text('DETENER ENTRENAMIENTO'));
       await tester.pumpAndSettle();
       first.complete(report(pending: 2));
       await tester.pumpAndSettle();
-      expect(calls.map((e) => e.method), ['setManualSlope', 'stopManualTest']);
+      expect(calls.map((e) => e.method), ['setManualSlope', 'stop']);
       expect(c.running, false);
       expect(c.pendingManualPercent, isNull);
       await clean(tester, c);
@@ -205,24 +207,6 @@ void main() {
         expect(c.pendingManualPercent, isNull);
         await clean(tester, c);
       }
-    },
-  );
-
-  testWidgets(
-    'failed LLANO preserves accepted grade and visible warning; profile limits prominent',
-    (tester) async {
-      final c = LatestUiController()..snapshot = report();
-      messenger.setMockMethodCallHandler(
-        c.channel,
-        (_) async => report(error: true),
-      );
-      await show(tester, c);
-      await tester.tap(find.text('LLANO 0 %'));
-      await tester.pumpAndSettle();
-      expect(find.text('Pendiente ordenada: +3,0 %'), findsOneWidget);
-      expect(find.textContaining('AVISO: LLANO no entregado'), findsOneWidget);
-      expect(find.textContaining('Positivo termina en +3 %.'), findsOneWidget);
-      await clean(tester, c);
     },
   );
 }

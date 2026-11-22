@@ -18,13 +18,13 @@ class LatestManualChangeTest {
             c.recordApiEntry();frames.add(now to hex(bytes));inApi?.invoke(stop)
             if(fail)throw IllegalStateException("simulated IPC failure")
         }, {events.add(it);if(it["event"]=="api_attempt")beforeApi?.invoke(it)},manualPriorityWaiting={waiting}) }
-        fun arm(profile:String="reported")=c.enable(true,"manual_session",true,profile)
+        fun arm()=c.enable(true)
         fun tick(t:Long){now=t;c.supervise();c.refreshTarget()}
         fun pending()=c.snapshot()["pendingManualChange"] as Map<*,*>?
     }
     @Test fun rapidStepsKeepOnlyLatestAndDoNotRaiseTransportRate() {
         val sim = Sim()
-        sim.arm("original")
+        sim.arm()
         assertEquals("api_returned", sim.c.request(0.5, rapidAdjustment = true)["event"])
         for (step in 2..6) {
             sim.now = 800L + (step - 2) * 100L
@@ -40,7 +40,7 @@ class LatestManualChangeTest {
 
     @Test fun individualDirectAndFlatBypassQuietWindowWhileStopCancelsAdjustment() {
         val sim = Sim()
-        sim.arm("original")
+        sim.arm()
         assertEquals("api_returned", sim.c.request(3.0)["event"])
         sim.now = 950
         sim.c.request(3.5, rapidAdjustment = true)
@@ -138,9 +138,9 @@ class LatestManualChangeTest {
         s.link=s.link.copy(signalAgeMs=3000);s.tick(1000);assertNull(s.pending());assertEquals(1,s.frames.size)
         s.link=s.link.copy(signalAgeMs=0);s.tick(5000);assertEquals(1,s.frames.size)
     }
-    @Test fun invalidProfileDoesNotEnterOrReplacePendingSlotAndSendErrorKeepsAcceptedValue() {
+    @Test fun invalidSlopeDoesNotReplacePendingSlotAndSendErrorKeepsAcceptedValue() {
         val s=Sim();s.arm();s.c.request(3.0);s.now=100;s.c.request(0.0)
-        for(p in listOf(-0.5,3.5,Double.NaN)) {assertEquals("rejected",s.c.request(p)["event"]);assertEquals(0.0,s.pending()!!["percent"])}
+        for(p in listOf(-5.5,15.5,Double.NaN)) {assertEquals("rejected",s.c.request(p)["event"]);assertEquals(0.0,s.pending()!!["percent"])}
         s.fail=true;s.tick(1000);assertNull(s.pending())
         assertEquals(3.0,(s.c.snapshot()["lastManualApiSuccess"] as Map<*,*>)["requestedPercent"])
         assertNotNull(s.c.snapshot()["lastApiError"])

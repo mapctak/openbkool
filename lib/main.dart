@@ -9,11 +9,8 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'ble_diagnostics.dart';
 import 'ant_diagnostics.dart';
 import 'ant_trainer_search.dart';
-import 'training.dart';
 import 'app_home.dart';
 import 'trainer_session.dart';
-import 'experimental_slopes.dart';
-import 'manual_ride.dart';
 
 void main() => runApp(const OpenBkoolApp());
 
@@ -50,8 +47,6 @@ class OpenBkoolApp extends StatelessWidget {
         antDiagnostics: session.diagnostics,
         antTrainerSearch: session.search,
         training: session.training,
-        initialDevice: session.selected.toJson(),
-        onDeviceSelected: (d) => session.select(SavedTrainer.fromMap(d)),
         onExit: close,
       ),
     ),
@@ -65,14 +60,10 @@ class BleDiagnosticPage extends StatefulWidget {
     this.antTrainerSearch,
     this.training,
     this.onExit,
-    this.initialDevice,
-    this.onDeviceSelected,
   });
   final AntDiagnosticsController? antDiagnostics;
   final AntTrainerSearchController? antTrainerSearch, training;
   final VoidCallback? onExit;
-  final Map<String, Object?>? initialDevice;
-  final Future<void> Function(Map<String, Object?>)? onDeviceSelected;
   @override
   State<BleDiagnosticPage> createState() => _BleDiagnosticPageState();
 }
@@ -508,57 +499,6 @@ class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
       body: ListView(
         children: [
           ListTile(
-            leading: const Icon(Icons.directions_bike),
-            title: const Text('Entrenamiento'),
-            subtitle: Text(
-              'Telemetría y control detallados · ${widget.initialDevice?['deviceNumber'] ?? 30064}/${widget.initialDevice?['deviceType'] ?? 112}/${widget.initialDevice?['transmissionType'] ?? 5}',
-            ),
-            onTap: () => Navigator.of(context).push<void>(
-              MaterialPageRoute(
-                builder: (_) => TrainingPage(
-                  controller: _training,
-                  initialDevice: widget.initialDevice,
-                  onDeviceSelected: widget.onDeviceSelected,
-                  searchController: _antTrainerSearch,
-                  onExport: _export,
-                ),
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.science_outlined),
-            title: const Text('Pendientes experimentales'),
-            subtitle: const Text(
-              'Pruebas aisladas de pendiente · +4 % bloqueado',
-            ),
-            onTap: () => Navigator.of(context).push<void>(
-              MaterialPageRoute(
-                builder: (_) => ExperimentalSlopesPage(controller: _training),
-              ),
-            ),
-          ),
-          ListTile(
-            leading: const Icon(Icons.sync),
-            title: const Text('Reenvío y parada ANT'),
-            subtitle: const Text('+0,5 % · refresco cada 5 s · máximo 30 s'),
-            onTap: () => Navigator.of(context).push<void>(
-              MaterialPageRoute(
-                builder: (_) => ManualRidePage(
-                  controller: _training,
-                  refreshTrial: true,
-                  device:
-                      widget.initialDevice ??
-                      const {
-                        'protocol': 'BKOOL_V1_PUBLIC',
-                        'deviceNumber': 30064,
-                        'deviceType': 112,
-                        'transmissionType': 5,
-                      },
-                ),
-              ),
-            ),
-          ),
-          ListTile(
             leading: const Icon(Icons.radar),
             title: const Text('Buscar rodillos ANT'),
             subtitle: const Text(
@@ -574,22 +514,7 @@ class _BleDiagnosticPageState extends State<BleDiagnosticPage> {
               ),
             ),
           ),
-          ListTile(
-            leading: const Icon(Icons.sensors),
-            title: const Text('Diagnóstico ANT+'),
-            subtitle: const Text(
-              'Comprobar hardware, servicios y acceso a radio ANT',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => AntDiagnosticPage(
-                  controller: _antDiagnostics,
-                  onExport: _export,
-                ),
-              ),
-            ),
-          ),
+          AntDiagnosticSection(controller: _antDiagnostics),
           const Padding(
             padding: EdgeInsets.all(16),
             child: Text(

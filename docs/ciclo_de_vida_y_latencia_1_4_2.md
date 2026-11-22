@@ -1,5 +1,7 @@
 # OpenBkool 1.4.2 · segundo plano y latencia ANT
 
+> Registro histórico. La política actual se describe en [Entrenamiento libre 1.5](entrenamiento_libre_1_5.md).
+
 ## Qué cerró la sesión del S20
 
 En la sesión `247aae8e-4647-4f58-9d52-3891ed8c2963`, a las 09:55:48 UTC el

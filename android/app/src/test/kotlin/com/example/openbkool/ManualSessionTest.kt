@@ -4,7 +4,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ManualSessionTest {
-    private class Sim(val allowed: Boolean = true) {
+    private class Sim {
         var time = 0L
         var link = ManualControlLink(true,true,67,22,0,true)
         var fail = false
@@ -13,8 +13,8 @@ class ManualSessionTest {
         val c = ManualAntControl(AntTrainerIdentity(30064,112,5),{time},{link},{b,_ ->
             if(fail) throw IllegalStateException("simulated IPC error")
             frames.add(hex(b))
-        },events::add,manualSessionAllowed=allowed)
-        fun arm(profile: String="original")=c.enable(true,"manual_session",true,profile)
+        },events::add)
+        fun arm()=c.enable(true)
         fun tick(t: Long) { time=t;c.supervise();c.refreshTarget() }
     }
     @Test fun fullOriginalDomainHasExactly41HalfPointEncodingsAndRejectsInvalidValues() {
@@ -35,48 +35,22 @@ class ManualSessionTest {
             try{encodePro1Slope(p);fail("invalid $p")}catch(_:IllegalArgumentException){}
         }
     }
-    @Test fun productionGateAndExplicitConsentAreIndependentOfLegacyExperiments() {
-        assertTrue(ManualControlPolicy.MANUAL_SESSION_PHYSICAL_ENABLED)
-        val s=Sim(false)
-        assertEquals("manual_session_stop_and_radio_buffer_validation_required",s.arm()["reason"])
-        for(p in listOf(-5.0,4.0,15.0)){s.c.request(p)}
-        s.tick(100000);assertTrue(s.frames.isEmpty())
-        val fake=Sim();assertEquals("explicit_activation_required",fake.c.enable(false,"manual_session")["reason"])
-        fake.arm();assertTrue(fake.frames.isEmpty());fake.tick(10000);assertTrue(fake.frames.isEmpty())
-        assertNull(fake.c.snapshot()["maxDurationMs"])
-        assertEquals("activation_rejected",Sim(false).c.enable(true,"continuous_experimental")["event"])
-    }
-    @Test fun profilesRequireSeparateConsentAndCannotBeEscalatedInActiveSession() {
-        val s=Sim()
-        assertEquals("manual_range_risk_consent_required",s.c.enable(true,"manual_session")["reason"])
-        assertEquals("manual_range_profile_required",s.c.enable(true,"manual_session",true)["reason"])
-        assertEquals("manual_range_profile_required",s.c.enable(true,"manual_session",true,"arbitrary")["reason"])
+    @Test fun fullRangeRequiresExplicitAuthorizationForEverySession() {
+        val s = Sim()
+        assertEquals("explicit_full_range_authorization_required", s.c.enable(false)["reason"])
+        for (value in -10..30) assertEquals("rejected", s.c.request(value / 2.0)["event"])
         assertTrue(s.frames.isEmpty())
-        s.arm("reported");assertEquals("already_enabled",s.arm("original")["reason"])
-        for(p in listOf(-5.0,-0.5,3.5,15.0)){assertEquals("rejected",s.c.request(p)["event"])}
-        assertTrue(s.frames.isEmpty());s.c.request(3.0)
-        assertEquals(3.0,s.c.snapshot()["operationalMaxPercent"])
-        assertEquals("reported",(s.c.snapshot()["authorizedRange"] as Map<*,*>)["id"])
-        s.c.stop("manual_stop",true);assertEquals("activation_rejected",s.arm("original")["event"])
-    }
-    @Test fun everyOriginalValueCanBeOrderedOnlyInsideAuthorizedNativeProfile() {
-        for(profile in ManualRangeProfile.entries) {
-            val s=Sim();s.arm(profile.wireName)
-            for(i in -10..30) {
-                val p=i/2.0;s.time+=1000
-                val before=s.frames.size;val result=s.c.request(p)
-                if(profile.accepts(p)) {
-                    assertEquals("api_returned",result["event"])
-                    assertEquals(hex(encodePro1Slope(p)),s.frames.last())
-                } else {assertEquals("rejected",result["event"]);assertEquals(before,s.frames.size)}
-            }
-            for(p in listOf(-5.5,15.5,0.25,Double.NaN,Double.POSITIVE_INFINITY)) {
-                val before=s.frames.size;s.c.request(p);assertEquals(before,s.frames.size)
-            }
-            val enabled=s.events.single{it["event"]=="enabled"}
-            assertEquals(profile.wireName,(enabled["authorizedRange"] as Map<*,*>)["id"])
-            assertEquals(false,(enabled["authorizedRange"] as Map<*,*>)["allValuesPhysicallyValidated"])
+        assertEquals("enabled", s.arm()["event"])
+        assertTrue(s.frames.isEmpty())
+        for (value in -10..30) {
+            s.time += 1000
+            assertEquals("api_returned", s.c.request(value / 2.0)["event"])
+            assertEquals(hex(encodePro1Slope(value / 2.0)), s.frames.last())
         }
+        assertEquals(41, s.frames.size)
+        s.c.stop("user_finish", true)
+        assertEquals("activation_rejected", s.arm()["event"])
+        assertEquals("rejected", Sim().c.request(15.0)["event"])
     }
     @Test fun twoHoursRefreshCurrentGoalWithoutDeadlineAndStopLeavesNoScheduledSends() {
         val s=Sim();s.arm();s.c.request(15.0)
@@ -84,8 +58,7 @@ class ManualSessionTest {
         assertEquals(1441,s.frames.size)
         assertEquals(1440,s.events.count{it["event"]=="periodic_refresh"})
         assertEquals("active",s.c.snapshot()["state"])
-        assertEquals(7200000L,s.c.snapshot()["elapsedControlMs"])
-        s.c.stop("manual_stop",true);s.c.completeStop(true)
+        s.c.stop("user_finish",true);s.c.completeStop(true)
         assertEquals("33 FF FF FF FF 20 4E FF",s.frames.last())
         val count=s.frames.size
         for(second in 7201L..7300L){s.tick(second*1000);s.c.request(15.0)}
@@ -135,7 +108,7 @@ class ManualSessionTest {
         }
     }
     @Test fun backgroundScreenExitAndManualStopPreventPendingOrLateRefreshes() {
-        for(reason in listOf("app_background","screen_closed","manual_stop")) {
+        for(reason in listOf("app_background","screen_closed","user_finish")) {
             val s=Sim();val queue=ManualCommandFence();s.arm();s.c.request(-5.0)
             queue.enqueue();queue.cancel(reason)
             s.c.stop(reason,true);s.c.completeStop(true)
@@ -149,7 +122,7 @@ class ManualSessionTest {
         for(failOnRefresh in listOf(true,false)) {
             val s=Sim();s.arm();s.c.request(3.0);s.fail=true
             if(failOnRefresh)s.tick(5000)
-            s.c.stop("manual_stop",true);s.c.completeStop(true)
+            s.c.stop("user_finish",true);s.c.completeStop(true)
             assertEquals(1,s.frames.size);assertEquals("error",s.c.snapshot()["state"])
             assertEquals(3.0,(s.c.snapshot()["lastManualApiSuccess"] as Map<*,*>)["requestedPercent"])
             assertEquals("unknown",s.c.snapshot()["resistanceAfterClose"])

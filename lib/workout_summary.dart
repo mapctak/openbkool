@@ -1,16 +1,13 @@
 import 'package:flutter/material.dart';
 
 import 'trainer_session.dart';
-import 'slope_presentation.dart';
 
 class WorkoutSummary extends StatelessWidget {
   const WorkoutSummary({
     super.key,
     required this.report,
     required this.trainer,
-    this.slopeIntent,
   });
-  final SlopeUiIntent? slopeIntent;
   final Map<String, Object?> report;
   final SavedTrainer trainer;
   @override
@@ -53,7 +50,10 @@ class WorkoutSummary extends StatelessWidget {
             Chip(label: Text(connectionLabel(state))),
           ],
         ),
-        ...trainingAvailability(report),
+        if (report['running'] == true && t['partial'] == true)
+          const Text(
+            'Telemetría parcial · las métricas ausentes se muestran con —',
+          ),
         Card(
           color: const Color(0xFF008F70),
           child: Padding(
@@ -84,7 +84,6 @@ class WorkoutSummary extends StatelessWidget {
             ),
           ),
         ),
-        ManualOrderSummary(report: report, intent: slopeIntent),
         LayoutBuilder(
           builder: (context, box) => Wrap(
             spacing: 8,
@@ -131,129 +130,4 @@ class WorkoutSummary extends StatelessWidget {
       ],
     );
   }
-}
-
-class ManualOrderSummary extends StatelessWidget {
-  const ManualOrderSummary({super.key, required this.report, this.intent});
-  final Map<String, Object?> report;
-  final SlopeUiIntent? intent;
-  @override
-  Widget build(BuildContext context) {
-    final state = SlopePresentation.fromReport(report, intent: intent);
-    final pending = report['clientPendingManualPercent'] as num?;
-    return Semantics(
-      liveRegion: true,
-      child: Card(
-        key: const ValueKey('slopeSummary'),
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Control: ${switch ((report['manualControl'] as Map?)?['state']) {
-                  'inactive' => 'Inactivo',
-                  'available' => 'Disponible',
-                  'active' => 'Activo',
-                  'stopping' => 'Deteniendo',
-                  'stopped' => 'Detenido',
-                  'suspended' => 'Suspendido',
-                  'error' => 'Error',
-                  _ => 'Esperando estado nativo',
-                }}',
-                key: const ValueKey('manualControlState'),
-              ),
-              if (state.trialStatus != null)
-                Text(
-                  state.trialStatus!,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
-                ),
-              Text(
-                '${state.finished || state.stopping || state.expired ? 'Última pendiente ordenada' : 'Pendiente ordenada'}: ${state.apiPercent != null && state.apiPercent! > 0 ? '+' : ''}${SlopePresentation.percent(state.apiPercent)} %',
-                key: const ValueKey('requestedSlope'),
-                style: Theme.of(context).textTheme.headlineSmall
-                    ?.copyWith(fontWeight: FontWeight.bold),
-              ),
-              Text(
-                'Seleccionada: ${state.requested != null && state.requested! > 0 ? '+' : ''}${SlopePresentation.percent(state.requested)} %',
-                key: const ValueKey('selectedSlope'),
-              ),
-              if (state.finished &&
-                  state.stopResult == 'zero_api_returned_unconfirmed')
-                const Text(
-                  'Control finalizado · Se solicitó 0 % · Resistencia actual desconocida',
-                ),
-              if (state.pending)
-                const Text('Solicitud pendiente de respuesta del controlador.')
-              else if (pending != null)
-                Text(
-                  'Cambio pendiente · ${SlopePresentation.percent(pending)} %',
-                ),
-              if (state.unrecordedIntent)
-                const Text(
-                  'Solicitud sin registro en el controlador. Revisa el diagnóstico; no se confirma su envío.',
-                ),
-              const SizedBox(height: 8),
-              Text(state.apiStatus, key: const ValueKey('slopeApiStatus')),
-              if (state.apiError != null)
-                Text(
-                  state.apiError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-              if (state.rejected)
-                const Text(
-                  'Última solicitud rechazada; no se ha enviado esa orden.',
-                ),
-              if (state.stopStatus != null) Text(state.stopStatus!),
-              if ((report['manualControl'] as Map?)?['state'] == 'error')
-                const Text(
-                  'Control bloqueado por error · Resistencia física actual desconocida.',
-                ),
-              const Text('Aplicación física no confirmada por el protocolo.'),
-              if (state.finished || state.stopping || state.expired)
-                const Text(
-                  'No se asume que el rodillo haya vuelto físicamente a 0 %.',
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-List<Widget> trainingAvailability(Map<String, Object?> report) {
-  if (report['running'] != true) return const [];
-  final telemetry = report['telemetry'] as Map?;
-  final manual = report['manualControl'] as Map?;
-  return [
-    if (report['antLink'] == 'receiving') const Text('Conectado por ANT'),
-    if (telemetry?['partial'] == true)
-      const Text(
-        'Telemetría parcial · las métricas ausentes se muestran con —',
-      ),
-    if (manual?['state'] == 'suspended')
-      const Text(
-        'Control suspendido · inicia otra conexión para volver a autorizarlo',
-      )
-    else if (manual?['enabled'] == true)
-      const Text('Control autorizado'),
-    if (report['backgroundAuthorized'] == true)
-      Text(
-        report['appInBackground'] == true
-            ? 'Sesión activa en segundo plano'
-            : 'Sesión en segundo plano habilitada · DETENER en la notificación',
-      )
-    else if (report['backgroundBlockReason'] case final String reason)
-      Text(
-        'Mantén OpenBkool visible. Bloquear la pantalla o cambiar de app detendrá la sesión. ${switch (reason) {
-          'notification_permission_denied' || 'notifications_disabled' => 'Permite las notificaciones de OpenBkool en Ajustes.',
-          'notification_channel_disabled' => 'Activa el canal Entrenamientos ANT en Ajustes.',
-          'connected_device_permission_denied' => 'Permite Dispositivos cercanos en Ajustes.',
-          _ => 'El servicio de entrenamiento no está activo.',
-        }}',
-      )
-    else
-      const Text('Sesión solo en primer plano'),
-  ];
 }

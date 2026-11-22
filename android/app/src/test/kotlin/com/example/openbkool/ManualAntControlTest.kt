@@ -15,11 +15,11 @@ class ManualAntControlTest {
         }, events::add)
     }
     @Test fun exactOriginalEncodingAndHardBounds() {
-        assertEquals("33 FF FF FF FF 20 4E FF", hex(encodeManualSlope(0.0)))
-        assertEquals("33 FF FF FF FF 52 4E FF", hex(encodeManualSlope(0.5)))
-        assertEquals("33 FF FF FF FF 84 4E FF", hex(encodeManualSlope(1.0)))
-        for (v in listOf(-0.5,1.5,0.25,Double.NaN,Double.POSITIVE_INFINITY,Double.NEGATIVE_INFINITY)) {
-            try { encodeManualSlope(v); fail("Debe rechazar $v") } catch (_: IllegalArgumentException) {}
+        assertEquals("33 FF FF FF FF 20 4E FF", hex(encodePro1Slope(0.0)))
+        assertEquals("33 FF FF FF FF 52 4E FF", hex(encodePro1Slope(0.5)))
+        assertEquals("33 FF FF FF FF 84 4E FF", hex(encodePro1Slope(1.0)))
+        for (v in listOf(-5.5,15.5,0.25,Double.NaN,Double.POSITIVE_INFINITY,Double.NEGATIVE_INFINITY)) {
+            try { encodePro1Slope(v); fail("Debe rechazar $v") } catch (_: IllegalArgumentException) {}
         }
     }
     @Test fun explicitActivationSendsNothingAndDefaultStopSendsNothing() {
@@ -62,12 +62,6 @@ class ManualAntControlTest {
         assertEquals("session_requires_reconnect",r.c.enable(true)["reason"])
         r.c.request(1.0);assertEquals(2,r.frames.size)
         assertEquals("zero_api_returned_unconfirmed",r.c.snapshot()["stopResult"])
-    }
-    @Test fun timeoutDoesNotExtendOnRepeatedActivationAndStopsAtZero() {
-        val r = Rig();r.c.enable(true);r.time=29000;r.c.enable(true);r.time=30000
-        assertEquals("test_timeout",r.c.abortReason())
-        r.c.request(1.0);assertTrue(r.frames.isEmpty())
-        assertTrue(r.c.stop("test_timeout",true));assertEquals(1,r.frames.size)
     }
     @Test fun signalLossBlocksPendingCommandAndRecoveryNeverReplays() {
         val r=Rig();r.c.enable(true);r.c.request(0.5);r.time=1000;r.link=r.link.copy(signalAgeMs=3000)
@@ -112,12 +106,10 @@ class ManualAntControlTest {
         r.link = r.link.copy(manufacturer=page50["manufacturerId"] as Int, model=page50["modelNumber"] as Int)
         assertEquals(true, r.c.snapshot()["eligible"])
         assertNull(r.c.snapshot()["unavailableReason"])
-        assertNull(r.c.snapshot()["remainingMs"])
         assertEquals(false, r.c.snapshot()["enabled"])
         assertEquals("activation_rejected", r.c.enable(false)["event"])
         r.time = 34424 // Training elapsed >30s does not consume the unarmed test timer.
         assertEquals("enabled", r.c.enable(true)["event"])
-        assertEquals(30000L, r.c.snapshot()["remainingMs"])
         assertTrue(r.frames.isEmpty())
     }
     @Test fun snapshotExplainsEveryTerminalBlockEvenWhenLinkRemainsHealthy() {
@@ -127,10 +119,6 @@ class ManualAntControlTest {
         val failed=Rig();failed.c.enable(true);failed.failure=IllegalStateException("IPC");failed.c.request(0.5)
         assertEquals(false,failed.c.snapshot()["eligible"])
         assertEquals("api_fault_requires_reconnect",failed.c.snapshot()["unavailableReason"])
-        val timed=Rig();timed.c.enable(true);timed.time=30000
-        assertEquals(false,timed.c.snapshot()["eligible"])
-        assertEquals("test_timeout",timed.c.snapshot()["unavailableReason"])
-        assertTrue(timed.frames.isEmpty())
     }
     @Test fun identityAndSignalBlocksAreDistinctAndRecoveryUpdatesSnapshot() {
         val r=Rig();r.link=r.link.copy(identityVerified=false)
@@ -166,15 +154,6 @@ class ManualAntControlTest {
         assertTrue(r.frames.isEmpty())
     }
 
-    @Test fun futureEncodingDoesNotAuthorizeTwoPercent() {
-        assertEquals("33 FF FF FF FF E8 4E FF", hex(encodeSlopeCandidate(2.0)))
-        val r = Rig(); r.c.enable(true)
-        assertEquals("experimental_level_not_authorized", r.c.request(2.0)["reason"])
-        assertTrue(r.frames.isEmpty())
-        assertEquals(30000L, r.c.snapshot()["maxDurationMs"])
-        assertEquals(1.0, r.c.snapshot()["operationalMaxPercent"])
-        assertEquals(false, r.c.snapshot()["continuousControlEnabled"])
-    }
     @Test fun canonicalRequestAndSuccessRemainSeparateAfterFailureAndStop() {
         val r = Rig(); r.c.enable(true); r.c.request(0.5)
         r.time = 1000; r.failure = IllegalStateException("radio lost"); r.c.request(1.0)
@@ -219,26 +198,6 @@ class ManualAntControlTest {
         assertEquals(listOf("available", "active", "error", "stopping", "error"),
             r.events.filter { it["event"] == "control_state" }.map { it["to"] })
         r.c.enable(true); r.c.request(1.0); assertEquals(1, r.frames.size)
-    }
-    @Test fun longConnectedSessionDoesNotArmOrExtendThirtySecondLimit() {
-        val r = Rig()
-        for (second in 0L..21600L step 60) {
-            r.time = second * 1000; assertEquals("available", r.c.snapshot()["state"])
-        }
-        assertTrue(r.frames.isEmpty())
-        val start = r.time; r.c.enable(true)
-        for (second in 0L..29L) {
-            r.time = start + second * 1000
-            r.c.request(if (second % 2L == 0L) 0.5 else 1.0)
-            assertEquals("active", r.c.snapshot()["state"])
-        }
-        r.time = start + 30000; assertEquals("test_timeout", r.c.abortReason())
-        r.c.request(0.5); assertEquals(30, r.frames.size)
-        assertTrue(r.c.stop("test_timeout", true)); r.c.completeStop(true)
-        assertEquals("stopped", r.c.snapshot()["state"])
-        r.time += 86400000; r.c.enable(true); r.c.request(1.0)
-        assertEquals(31, r.frames.size)
-        assertEquals("test_timeout", r.c.snapshot()["stopReason"])
     }
     @Test fun lifecycleAndRadioFailuresKeepStopReasonsAndNeverResume() {
         for (reason in listOf("screen_closed", "app_background", "engine_disposed", "manual_stop", "disconnected")) {

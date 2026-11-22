@@ -44,7 +44,7 @@ void main() {
     () => messenger.setMockMethodCallHandler(TrainerPreferences.channel, null),
   );
   testWidgets(
-    'home never auto-connects and direct connect uses remembered exact identity',
+    'home offers only free training and connects using the remembered identity',
     (tester) async {
       messenger.setMockMethodCallHandler(
         TrainerPreferences.channel,
@@ -68,7 +68,11 @@ void main() {
         findsOneWidget,
       );
       expect(training.starts, isEmpty);
-      await tester.tap(find.text('Conectar rodillo'));
+      expect(find.text('ENTRENAMIENTO LIBRE'), findsOneWidget);
+      expect(find.text('Control manual 1.4'), findsNothing);
+      await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Conectar rodillo por ANT'));
       await tester.pumpAndSettle();
       expect(training.starts.single, {
         'mode': 'training_connected',
@@ -92,7 +96,7 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(find.text('Error de conexión'), findsOneWidget);
-      expect(find.text('Buscar rodillos'), findsOneWidget);
+      expect(find.text('radio unavailable'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       session.dispose();
     },
@@ -106,8 +110,8 @@ void main() {
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(const OpenBkoolApp());
       await tester.pumpAndSettle();
-      expect(find.text('Rutas GPX'), findsOneWidget);
-      expect(find.text('Próximamente'), findsOneWidget);
+      expect(find.text('Rutas GPX'), findsNothing);
+      expect(find.text('Sesiones de spinning'), findsNothing);
       expect(find.text('Buscar dispositivos BLE'), findsNothing);
       expect(radio.settings, isEmpty);
       await tester.tap(find.byTooltip('Ajustes'));
@@ -121,7 +125,7 @@ void main() {
       final state = tester.state(find.byType(BleDiagnosticPage));
       await tester.tap(find.byTooltip('Volver al inicio'));
       await tester.pumpAndSettle();
-      expect(find.text('Conectar rodillo'), findsOneWidget);
+      expect(find.text('ENTRENAMIENTO LIBRE'), findsOneWidget);
       await tester.tap(find.byTooltip('Ajustes'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Diagnósticos avanzados'));
@@ -225,37 +229,24 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('Entrenamiento libre'),
+        find.text('ENTRENAMIENTO LIBRE'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Entrenamiento libre'));
+      await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
       await tester.pumpAndSettle();
-      expect(find.text('Entrenamiento libre'), findsOneWidget);
+      expect(find.text('ENTRENAMIENTO LIBRE'), findsOneWidget);
+      final list = find.byType(Scrollable).first;
+      await tester.scrollUntilVisible(find.text('200'), 150, scrollable: list);
       expect(find.text('200'), findsOneWidget);
-      expect(find.text('1,23 km'), findsOneWidget);
-      expect(find.text('00:01:01'), findsOneWidget);
-      expect(find.text('Velocidad'), findsOneWidget);
-      expect(find.text('80 RPM'), findsOneWidget);
-      expect(find.text('Pendiente ordenada: +0,5 %'), findsOneWidget);
-      expect(find.text('Orden enviada a la API ANT: 0,5 %'), findsOneWidget);
-      expect(
-        find.text('Aplicación física no confirmada por el protocolo.'),
-        findsOneWidget,
-      );
       await tester.scrollUntilVisible(
-        find.widgetWithText(OutlinedButton, '+'),
-        200,
-        scrollable: find.byType(Scrollable).first,
+        find.text('00:01:01'),
+        150,
+        scrollable: list,
       );
-      await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<OutlinedButton>(find.widgetWithText(OutlinedButton, '+'))
-            .onPressed,
-        isNull,
-      );
+      expect(find.text('1,23 km'), findsOneWidget);
+      expect(find.text('80 RPM'), findsOneWidget);
       expect(training.starts, isEmpty);
       expect(tester.takeException(), isNull);
       await training.stop();
@@ -263,48 +254,35 @@ void main() {
       session.dispose();
     },
   );
-  testWidgets(
-    'detailed training can be inspected without stopping; leaving free training stops once',
-    (tester) async {
-      final training = FakeTraining();
-      final session = TrainerSession(training: training);
-      training.snapshot = {
-        'running': true,
-        'status': 'running',
-        'sessionId': 'live',
-        'selectedDevice': SavedTrainer.known.device,
-        'connectionState': 'identity_verified',
-        'telemetry': {'signal': 'receiving'},
-      };
-      await tester.pumpWidget(OpenBkoolApp(session: session));
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('Entrenamiento libre'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Entrenamiento libre'));
-      await tester.pumpAndSettle();
-      await tester.scrollUntilVisible(
-        find.text('Diagnóstico detallado del entrenamiento'),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Diagnóstico detallado del entrenamiento'));
-      await tester.pumpAndSettle();
-      expect(find.text('Entrenamiento'), findsOneWidget);
-      expect(training.stops, 0);
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-      expect(training.stops, 0);
-      await tester.pageBack();
-      await tester.pumpAndSettle();
-      expect(training.stops, 1);
-      expect(training.running, false);
-      await tester.pumpWidget(const SizedBox());
-      session.dispose();
-    },
-  );
+  testWidgets('leaving free training explicitly stops the session once', (
+    tester,
+  ) async {
+    final training = FakeTraining();
+    final session = TrainerSession(training: training);
+    training.snapshot = {
+      'running': true,
+      'status': 'running',
+      'sessionId': 'live',
+      'selectedDevice': SavedTrainer.known.device,
+      'connectionState': 'identity_verified',
+      'telemetry': {'signal': 'receiving'},
+    };
+    await tester.pumpWidget(OpenBkoolApp(session: session));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('ENTRENAMIENTO LIBRE'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+    await tester.pumpAndSettle();
+    expect(training.stops, 0);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(training.stops, 1);
+    expect(training.running, false);
+    await tester.pumpWidget(const SizedBox());
+    session.dispose();
+  });
 }

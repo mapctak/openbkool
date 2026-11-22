@@ -53,12 +53,12 @@ class AntTransmissionAuditTest {
         val audit=AntTransmissionAudit{0L};audit.opened()
         val queue=ManualCommandFence();val tasks=ArrayDeque<()->Unit>();val frames=mutableListOf<String>()
         for(value in listOf(1.0,0.0)){
-            queue.enqueue();tasks.add {if(queue.dequeue()==null && audit.channelUsable)frames.add(hex(encodeManualSlope(value)))}
+            queue.enqueue();tasks.add {if(queue.dequeue()==null && audit.channelUsable)frames.add(hex(encodePro1Slope(value)))}
         }
         queue.cancel("manual_stop")
         while(tasks.isNotEmpty())tasks.removeFirst().invoke()
         // The dedicated stop path may submit one zero before close, not the cancelled manual flat.
-        frames.add(hex(encodeManualSlope(0.0)));audit.closeRequested();audit.closeApiReturned()
+        frames.add(hex(encodePro1Slope(0.0)));audit.closeRequested();audit.closeApiReturned()
         assertEquals(listOf("33 FF FF FF FF 20 4E FF"),frames)
         assertEquals("unknown",queue.snapshot()["radioBufferPending"])
     }

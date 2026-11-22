@@ -7,9 +7,6 @@ import 'package:flutter/services.dart';
 import 'ant_trainer_search.dart';
 import 'trainer_session.dart';
 import 'training.dart';
-import 'spinning.dart';
-import 'manual_ride.dart';
-import 'workout_summary.dart';
 
 const emerald = Color(0xFF008F70);
 typedef AdvancedBuilder = Widget Function(
@@ -56,15 +53,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
 
   void openTraining() {
     Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => TrainingPage(
-          controller: session.training,
-          searchController: session.search,
-          simple: true,
-          initialDevice: session.selected.toJson(),
-          onDeviceSelected: (d) => session.select(SavedTrainer.fromMap(d)),
-        ),
-      ),
+      MaterialPageRoute(builder: (_) => TrainingPage(session: session)),
     );
   }
 
@@ -101,13 +90,6 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                   Navigator.pop(context);
                   showAdvanced();
                 },
-              ),
-              const ListTile(
-                leading: Icon(Icons.shield_outlined),
-                title: Text('Control manual experimental'),
-                subtitle: Text(
-                  'Activación por sesión · 0–1 % · máximo 30 s. Cerrar el canal no garantiza resistencia segura.',
-                ),
               ),
             ],
           ),
@@ -194,7 +176,6 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                           Text('ANT · ${session.selected.id}'),
                           const SizedBox(height: 12),
                           ConnectionBadge(state: session.connection),
-                          ...trainingAvailability(session.training.snapshot),
                           if (session.connection ==
                               TrainerConnection.disconnected)
                             const Padding(
@@ -211,28 +192,6 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                               ),
                             ),
                           const SizedBox(height: 16),
-                          SizedBox(
-                            width: double.infinity,
-                            child: FilledButton.icon(
-                              onPressed: session.loading || session.locked
-                                  ? null
-                                  : session.connect,
-                              icon: const Icon(Icons.link),
-                              label: Text(
-                                session.connection ==
-                                        TrainerConnection.connected
-                                    ? 'Rodillo conectado'
-                                    : 'Conectar rodillo',
-                              ),
-                            ),
-                          ),
-                          if (session.training.running)
-                            TextButton(
-                              onPressed: session.training.manualStopping
-                                  ? null
-                                  : session.training.stop,
-                              child: const Text('Desconectar rodillo'),
-                            ),
                           TextButton.icon(
                             onPressed: session.loading || session.locked
                                 ? null
@@ -262,82 +221,15 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                       contentPadding: const EdgeInsets.all(20),
                       leading: const Icon(Icons.bolt, color: emerald, size: 32),
                       title: const Text(
-                        'Entrenamiento libre',
+                        'ENTRENAMIENTO LIBRE',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 20,
                         ),
                       ),
-                      subtitle: const Text(
-                        'Tu potencia, tu ritmo. Control manual opcional.',
-                      ),
+                      subtitle: const Text('Pendiente manual y telemetría ANT'),
                       trailing: const Icon(Icons.chevron_right),
                       onTap: session.loading ? null : openTraining,
-                    ),
-                  ),
-                  Card(
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(20),
-                      leading: const Icon(Icons.tune, color: emerald, size: 32),
-                      title: const Text('Control manual 1.4'),
-                      subtitle: const Text(
-                        '41 pendientes · perfiles por sesión · sin caducidad fija',
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: session.loading
-                          ? null
-                          : () => Navigator.of(context).push<void>(
-                              MaterialPageRoute(
-                                builder: (_) => ManualRidePage(
-                                  controller: session.training,
-                                  initialProfile: 'reported',
-                                  device: session.selected.toJson(),
-                                ),
-                              ),
-                            ),
-                    ),
-                  ),
-                  Card(
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(20),
-                      leading: const Icon(
-                        Icons.timer_outlined,
-                        color: emerald,
-                        size: 32,
-                      ),
-                      title: const Text(
-                        'Sesiones de spinning',
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 20,
-                        ),
-                      ),
-                      subtitle: const Text(
-                        'Guías de 15–30 min · Sin resistencia automática',
-                      ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => Navigator.of(context).push<void>(
-                        MaterialPageRoute(
-                          builder: (_) =>
-                              SpinningProgramsPage(session: session),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const Card(
-                    child: ListTile(
-                      contentPadding: EdgeInsets.all(20),
-                      leading: Icon(Icons.route_outlined),
-                      title: Text('Rutas GPX'),
-                      subtitle: Text('Próximamente'),
-                      trailing: Chip(label: Text('Pronto')),
-                    ),
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 16),
-                    child: Text(
-                      'La conexión no activa la resistencia. Cada prueba requiere tu confirmación.',
-                      textAlign: TextAlign.center,
                     ),
                   ),
                 ],

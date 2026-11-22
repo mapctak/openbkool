@@ -599,7 +599,7 @@ void main() {
         (report['devices'] as List).single['advertisedName'],
         'Bkool conservado',
       );
-      await tester.pageBack();
+      await tester.tap(find.text('Diagnóstico ANT+'));
       await tester.pumpAndSettle();
       expect(find.text('Bkool conservado'), findsOneWidget);
       await export(tester);

@@ -31,41 +31,6 @@ internal fun configureV1Dedicated(c: V1DedicatedChannel, target: AntTrainerIdent
     trace.run("connection.open") { c.open() }
 }
 
-/** A dry-run plan is NOT an accepted command. There is deliberately no radio transport here. */
-internal class ManualSlopePreparation(private val target: AntTrainerIdentity) {
-    private var connected = false
-    private var stopped = false
-    private var lastRequest: Int? = null
-    private var lastAt: Long? = null
-    var lastResult: Map<String, Any?>? = null; private set
-    fun connectionVerified(value: Boolean) { connected = value && !stopped }
-    fun stop() { stopped = true; connected = false; lastRequest = null; lastAt = null }
-    fun prepare(percent: Double, nowMs: Long): Map<String, Any?> {
-        val reason = when {
-            !percent.isFinite() || percent < 0 || percent > 1 -> "invalid_range"
-            kotlin.math.abs(percent * 100 - Math.round(percent * 100)) > 0.000001 -> "unsupported_precision"
-            stopped -> "session_stopped"
-            !connected -> "not_connected"
-            lastRequest == Math.round(percent * 100).toInt() -> "duplicate"
-            lastAt?.let { nowMs - it < 1000 } == true -> "rate_limited"
-            else -> "transmission_disabled"
-        }
-        val validPlan = reason == "transmission_disabled"
-        // Deliberately restricted to integral hundredths, no out-of-range wrap or truncation.
-        val hundredths = if (percent.isFinite() && percent in 0.0..1.0) Math.round(percent * 100).toInt() else null
-        val payload = if (validPlan) {
-            val grade = 20000 + hundredths!!
-            hex(byteArrayOf(0x33, -1, -1, -1, -1, (grade and 255).toByte(), (grade shr 8).toByte(), -1))
-        } else null
-        if (validPlan) { lastRequest = hundredths; lastAt = nowMs }
-        return mapOf("state" to reason, "requestedPercent" to percent.takeIf { it.isFinite() },
-            "quantizedPercent" to hundredths?.div(100.0), "candidatePayloadHex" to payload,
-            "sent" to false, "transmissionEnabled" to false, "target" to target.toMap()).also { lastResult = it }
-    }
-    fun snapshot(): Map<String, Any?> = mapOf("transmissionEnabled" to false, "connectedIdentityVerified" to connected,
-        "pendingCommands" to 0, "stopPolicy" to "cancel_and_close_without_reset", "resistanceAfterClose" to "unknown", "lastPreparation" to lastResult)
-}
-
 /** Every identity must be exact, including transmission type; wildcards are not proof. */
 internal fun channelIdentitiesMatch(target: AntTrainerIdentity, configured: Map<String, Any?>?,
     adapter: Map<String, Any?>?, received: Map<String, Any?>?): Boolean =
