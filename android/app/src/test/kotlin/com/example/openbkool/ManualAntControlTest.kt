@@ -45,12 +45,12 @@ class ManualAntControlTest {
     }
     @Test fun noDuplicateNoUnnecessaryRetryAndThrottle() {
         val r = Rig(); r.c.enable(true)
-        r.c.request(0.0); assertEquals(1,r.frames.size)
-        r.c.request(0.0); assertEquals("duplicate_skipped",r.events.last()["event"])
-        r.c.request(0.5); assertEquals("manual_pending",r.events.last()["event"])
-        r.time=1000; r.c.request(0.5)
-        r.time=2000; r.c.request(1.0)
-        assertEquals(listOf("33 FF FF FF FF 20 4E FF","33 FF FF FF FF 52 4E FF","33 FF FF FF FF 84 4E FF"),r.frames.map(::hex))
+        r.c.request(0.5); assertEquals(1,r.frames.size)
+        r.c.request(0.5); assertEquals("duplicate_skipped",r.events.last()["event"])
+        r.c.request(1.0); assertEquals("manual_pending",r.events.last()["event"])
+        r.time=1000; r.c.request(1.0)
+        r.time=2000; r.c.request(0.0)
+        assertEquals(listOf("33 FF FF FF FF 52 4E FF","33 FF FF FF FF 84 4E FF","33 FF FF FF FF 20 4E FF"),r.frames.map(::hex))
         assertEquals("unconfirmed",r.c.snapshot()["physicalApplication"])
         assertEquals(0,r.c.snapshot()["pendingCommands"])
     }

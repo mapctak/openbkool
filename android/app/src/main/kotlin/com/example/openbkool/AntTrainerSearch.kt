@@ -44,6 +44,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
     @Volatile private var active: Session? = null
     @Volatile private var latest: Map<String, Any?> = mapOf("status" to "not_started", "running" to false)
 
+    @Volatile private var lastFinished: Map<String, Any?>? = null
+
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
         sink = events
         events.success(snapshot())
@@ -115,9 +117,22 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             result.error("session_closed", "Sesión cerrada", null)
         }
     }
-    fun exportCsv(result: MethodChannel.Result) {
-        if (active != null) { result.error("training_active", "Finaliza el entrenamiento antes de exportar", null); return }
-        val name = latest["csvFile"] as? String
+    fun exportJson(sessionId: String?, finalized: Boolean, result: MethodChannel.Result) {
+        val report = if (finalized) lastFinished else latest
+        if (report == null || report["sessionId"] == null || (sessionId != null && report["sessionId"] != sessionId)) {
+            result.error("report_unavailable", "El registro de esa sesión no está disponible", null)
+            return
+        }
+        result.success(report + mapOf("capturedAt" to now()))
+    }
+
+    fun exportCsv(sessionId: String?, result: MethodChannel.Result) {
+        val report = lastFinished
+        if (report == null || (sessionId != null && report["sessionId"] != sessionId)) {
+            result.error("report_unavailable", "El CSV final de esa sesión no está disponible", null)
+            return
+        }
+        val name = report["csvFile"] as? String
         if (name == null) { result.error("no_csv", "No hay registro CSV", null); return }
         Thread {
             try {
@@ -147,7 +162,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
         private var reportSequence = 0L
         private val startedAt = now()
         private val identificationTiming = AntIdentificationTiming(android.os.SystemClock::elapsedRealtime, target) {
-            event("identification_milestone", "${it["milestone"]}: ${it["elapsedMs"]} ms", details = it)
+            val type = if (it["milestone"] == "manufacturer_model_wait_long") "identification_wait" else "identification_milestone"
+            event(type, "${it["milestone"]}: ${it["elapsedMs"]} ms", details = it)
         }
         val id = java.util.UUID.randomUUID().toString()
         private var stopping = false
@@ -170,8 +186,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                 val entry = e + mapOf("timestamp" to now(), "sessionId" to id)
                 if (manualEvents.size >= 2000) { manualEvents.removeFirst(); droppedManualEvents++ }
                 manualEvents.addLast(entry)
-                event("manual_control", entry.toString(), details = entry)
                 record("manual:${entry["event"]}", null, entry)
+                schedulePublish()
             },
                 manualPriorityWaiting = { waitingManualChanges.get() > 0 }, describeError = ::antErrorDetails) }
         private fun manualLink(): ManualControlLink {
@@ -258,7 +274,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()) ?: return
             try { csv?.write(csvRow(listOf(now(), t["elapsedMs"], kind, "BKOOL_V1_PUBLIC", target.number, target.type, target.transmission,
                 payload?.let { hex(it) }, t["speedKmh"], t["powerW"], t["cadenceRpm"], t["distanceM"],
-                t["signal"], t["distancePartial"], t["speedAgeMs"], t["powerAgeMs"], details?.let { org.json.JSONObject(it).toString() }))) }
+                t["signal"], t["distancePartial"], t["speedAgeMs"], t["powerAgeMs"], details?.let { org.json.JSONObject(it).toString() }, id))) }
             catch (error: Exception) { csvFailure(error) }
         }
         private val devices = linkedMapOf<String, MutableMap<String, Any?>>()
@@ -320,6 +336,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                 "authorizeControl" -> manual.enable(explicit)
                 "setManualSlope" -> {
                     if (percent == null) { result.error("invalid_slope", "Pendiente numérica requerida", null); return }
+                    record("slope_selection", null, mapOf("selectedPercent" to percent.takeIf { it.isFinite() },
+                        "requestedAtMs" to requestedAt, "requestedAtUtc" to requestedAtUtc))
                     manual.request(percent, requestedAt, requestedAtUtc, rapidAdjustment, uiQueueMs)
                     scheduleTrainingTick()
                 }
@@ -335,7 +353,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                     val file = java.io.File.createTempFile("training_", ".csv", context.filesDir)
                     csvFile = file.name; csv = file.bufferedWriter()
                     csv!!.write(csvRow(listOf("timestamp_utc", "elapsed_ms", "event", "protocol", "device_id", "device_type", "transmission_type",
-                        "payload_hex", "speed_kmh", "power_w", "cadence_rpm", "distance_m", "signal", "distance_partial", "speed_age_ms", "power_age_ms", "details_json")))
+                        "payload_hex", "speed_kmh", "power_w", "cadence_rpm", "distance_m", "signal", "distance_partial", "speed_age_ms", "power_age_ms", "details_json", "session_id")))
+                    record("session_started", null, mapOf("recordState" to "partial"))
                 } catch (error: Exception) { csvFailure(error); finish("error"); return }
             }
             if (cancelled) return // The queued stop records its own reason and closes the session.
@@ -344,7 +363,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
         private fun event(type: String, message: String, error: Exception? = null, details: Map<String, Any?>? = null) {
             if (training && events.size >= 500) { events.removeFirst(); droppedEvents++ }
             events.addLast(mapOf("timestamp" to now(), "event" to type, "stage" to stage,
-                "message" to message, "errorType" to error?.javaClass?.simpleName, "details" to details))
+                "sessionId" to id, "message" to message, "errorType" to error?.javaClass?.simpleName, "details" to details))
+            if (training && (error != null || type in setOf("channel_event", "channel_death",
+                "service_disconnected", "channel_identity_mismatch", "identification_wait", "command_cancelled"))) {
+                record(type, null, mapOf("message" to message, "error" to error?.message) + details.orEmpty())
+            }
             schedulePublish()
         }
         private fun fail(where: String, error: Exception) {
@@ -377,7 +400,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                         "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
             }
             val report = mapOf(
-                "controlDiagnosticsVersion" to 12,
+                "controlDiagnosticsVersion" to 13,
+                "recordState" to if (finished) "final" else "partial",
                 "backgroundPolicy" to if (training) "foreground_only" else null,
                 "transmissionDiagnostics" to (transmissionAudit.snapshot() + mapOf(
                     "lastManualOrder" to manualState["lastManualApiSuccess"],
@@ -422,6 +446,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                     "v1WildcardId" to !dedicated, "v1ExpectedType" to 112,
                     "v1RadioTimeoutsApplied" to dedicated),
             )
+            if (training && finished) lastFinished = report
             latest = report
             main.post { if (latest === report) { sink?.success(snapshot()) } }
         }
@@ -663,19 +688,28 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
 
         private fun receive(type: String, messageId: Int, content: ByteArray, receivedAt: Long) {
             val decoded = decodeAntFrame(messageId, content)
+            if (training && decoded == null && messageId in listOf(0x4e, 0x4f) && content.size >= 9 &&
+                (content[1].toInt() and 255) in listOf(0x50, 0x51)) {
+                val payload = content.copyOfRange(1, 9)
+                val details = mapOf("payloadHex" to hex(payload), "receivedAtMs" to receivedAt,
+                    "reason" to "extended_identity_missing_or_invalid")
+                event("identification_frame_ignored", "Página de identificación sin identidad ANT verificable", details = details)
+                record("identification_frame_ignored", payload, details)
+            }
             if (training && decoded != null) {
                 receivedChannelId = mapOf("deviceNumber" to decoded.deviceNumber, "deviceType" to decoded.deviceType, "transmissionType" to decoded.transmissionType)
                 if (!telemetry!!.accepts(decoded)) {
-                    event("channel_identity_mismatch", "Paquete ajeno al rodillo seleccionado; ignorado", details = receivedChannelId)
+                    event("channel_identity_mismatch", "Paquete ajeno al rodillo seleccionado; ignorado",
+                        details = receivedChannelId.orEmpty() + mapOf("payloadHex" to hex(decoded.payload), "receivedAtMs" to receivedAt))
                     return
                 }
             }
             if (training && decoded != null) {
                 if (!identityVerified) { identityVerified = true; event("identity_verified", "Identidad extendida recibida coincide con $target") }
-                identificationTiming.receive(decoded)
+                identificationTiming.receive(decoded, receivedAt)
                 telemetry!!.receive(decoded, receivedAt)
                 observeBkoolPage11(decoded.payload)?.let { manual.observePage11(it, receivedAt) }
-                record("page", decoded.payload)
+                if ((decoded.payload[0].toInt() and 255) !in listOf(0x50, 0x51)) record("page", decoded.payload)
             }
             if (frames.size >= 2000) { frames.removeFirst(); droppedFrames++ }
             frames.addLast(mapOf("timestamp" to now(), "protocol" to "BKOOL_V1_PUBLIC", "messageType" to type,
@@ -696,7 +730,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
                 device["lastSeen"] = now()
                 manufacturerPage(decoded.payload)?.let { page ->
                     device.putAll(page)
-                    event("information_page", "ANT ID=${decoded.deviceNumber} página=${decoded.payload[0].toInt() and 255}: $page")
+                    val observation = page + mapOf("receivedAtMs" to receivedAt, "payloadHex" to hex(decoded.payload),
+                        "identityVerifiedForControl" to (page["manufacturerId"] == 67 && page["modelNumber"] == 22))
+                    event("information_page", "ANT ID=${decoded.deviceNumber} página=${decoded.payload[0].toInt() and 255}: $page",
+                        details = observation)
+                    record("information_page", decoded.payload, observation)
                 }
             }
             if (type == "CHANNEL_EVENT" && content.size >= 3) {
@@ -786,14 +824,15 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false) 
             if (finished) return
             finalClose?.let { main.removeCallbacks(it) }; finalClose = null
             val clean = cleanup()
-            if (training) {
-                record("finished:$reason", null)
-                try { csv?.close() } catch (error: Exception) { csvFailure(error) }
-                csv = null
-            }
             identificationTiming.finish()
             manual.completeStop(clean)
             status = if (!clean) "cleanup_failed" else reason
+            if (training) {
+                record("finished:$reason", null, mapOf("recordState" to "final", "status" to status,
+                    "stopReason" to reason, "resourcesReleased" to clean, "stopResult" to manual.snapshot()["stopResult"]))
+                try { csv?.close() } catch (error: Exception) { csvFailure(error) }
+                csv = null
+            }
             stage = "finished"; finished = true
             main.removeCallbacks(publishLater)
             event("search_finished", "Finalizado: $status; recursos liberados=$resourcesReleased")

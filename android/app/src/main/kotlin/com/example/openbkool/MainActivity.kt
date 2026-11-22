@@ -40,7 +40,9 @@ class MainActivity : FlutterActivity() {
                     call.argument<Boolean>("rapidAdjustment") == true, call.argument<Number>("uiQueueMs")?.toLong())
                 "stop" -> session.stop(result, if (call.argument<String>("reason") == "screen_closed") "screen_closed" else "user_finish")
                 "snapshot" -> result.success(session.snapshot())
-                "exportCsv" -> session.exportCsv(result)
+                "exportCsv" -> session.exportCsv(call.argument<String>("sessionId"), result)
+                "exportJson" -> session.exportJson(call.argument<String>("sessionId"),
+                    call.argument<Boolean>("final") == true, result)
                 else -> result.notImplemented()
             }
         }

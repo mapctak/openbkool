@@ -69,15 +69,29 @@ class _TrainingPageState extends State<TrainingPage> {
 
   Future<void> export({required bool csv}) async {
     final controller = widget.session.training;
+    final id = controller.snapshot['sessionId'] as String?;
+    if (id == null) return;
+    final finalized = !controller.running;
     try {
+      final report = csv
+          ? null
+          : await controller.exportJson(id, finalized: finalized);
       final data = csv
-          ? await controller.channel.invokeMethod<String>('exportCsv')
-          : const JsonEncoder.withIndent('  ').convert(controller.snapshot);
+          ? await controller.exportCsv(id)
+          : report == null
+          ? null
+          : const JsonEncoder.withIndent('  ').convert(report);
       if (data == null) throw StateError('Registro no disponible');
       await Clipboard.setData(ClipboardData(text: data));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('${csv ? 'CSV' : 'JSON'} copiado')),
+          SnackBar(
+            content: Text(
+              csv
+                  ? 'CSV final copiado'
+                  : 'JSON ${report?['recordState'] == 'final' ? 'final' : 'parcial'} copiado',
+            ),
+          ),
         );
       }
     } catch (error) {
@@ -110,6 +124,11 @@ class _TrainingPageState extends State<TrainingPage> {
           !c.controlTransportUncertain;
       final blocked = manual['unavailableReason'] as String?;
       final enabled = manual['enabled'] == true;
+      final identification = report['identificationTiming'] as Map? ?? const {};
+      final clientEvents = report['clientManualChanges'] as List? ?? const [];
+      final lastClientEvent = clientEvents.isEmpty
+          ? null
+          : clientEvents.last as Map;
       final usable = available && enabled && c.acceptingManualChanges;
       final pending = c.pendingManualPercent;
       final accepted =
@@ -156,6 +175,13 @@ class _TrainingPageState extends State<TrainingPage> {
               if (c.running && manual['state'] == 'suspended')
                 const Text(
                   'Control suspendido por telemetría parcial. Vuelve a conectar para autorizar otra sesión.',
+                )
+              else if (c.running &&
+                  blocked == 'manufacturer_model_not_verified')
+                Text(
+                  identification['manufacturerWaitLong'] == true
+                      ? 'La identificación está tardando. Seguimos esperando una página 0x50 válida (fabricante 67, modelo 22).'
+                      : 'Esperando fabricante y modelo del rodillo (página 0x50).',
                 )
               else if (c.running && !available && blocked != null)
                 Text('Control bloqueado · $blocked'),
@@ -208,10 +234,23 @@ class _TrainingPageState extends State<TrainingPage> {
               ),
               if (selected < 0 || selected > 3)
                 const Text('Pendiente experimental'),
+              if (lastClientEvent?['event'] == 'rejected_flat_pending')
+                const Text(
+                  'LLANO sigue pendiente. Espera su envío antes de solicitar otra pendiente.',
+                ),
               if (manual['lastManualRejection'] case final Map rejection)
-                Text('Orden rechazada · ${rejection['reason']}'),
+                Text(
+                  rejection['requestedPercent'] == 0 &&
+                          rejection['reason'] != 'flat_pending'
+                      ? 'LLANO no se pudo enviar · ${rejection['reason']}'
+                      : 'Orden rechazada · ${rejection['reason']}',
+                ),
               if (manual['lastApiError'] case final Map error)
-                Text('Error ANT · ${error['error']}'),
+                Text(
+                  error['requestedPercent'] == 0 && error['stopRequest'] != true
+                      ? 'LLANO no se pudo confirmar en la API ANT · ${error['error']}'
+                      : 'Error ANT · ${error['error']}',
+                ),
               if (report['clientError'] case final String error) Text(error),
               if (manual['stopReason'] case final String reason)
                 Text(
@@ -233,7 +272,9 @@ class _TrainingPageState extends State<TrainingPage> {
                   ),
                   TextButton(
                     onPressed: id != null ? () => export(csv: false) : null,
-                    child: const Text('Copiar JSON'),
+                    child: Text(
+                      c.running ? 'Copiar JSON parcial' : 'Copiar JSON',
+                    ),
                   ),
                 ],
               ),

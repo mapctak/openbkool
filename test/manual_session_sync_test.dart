@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -23,6 +24,7 @@ void main() {
       var sequence = 0;
       var enabled = false;
       var stopped = false;
+      final copied = <String>[];
       double? selected, accepted;
       Map<String, Object?>? success, stop;
       final history = <Map<String, Object?>>[];
@@ -30,7 +32,9 @@ void main() {
         'sessionId': 'sync',
         'reportSequence': ++sequence,
         'running': sequence > 1 && !stopped,
-        'status': stopped ? 'manual_stop' : 'running',
+        'status': stopped ? 'user_finish' : 'running',
+        'recordState': stopped ? 'final' : 'partial',
+        if (stopped) 'csvFile': 'training_sync.csv',
         'manualControl': {
           'enabled': enabled,
           'eligible': true,
@@ -62,10 +66,23 @@ void main() {
           return null;
         },
       );
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add((call.arguments as Map)['text'] as String);
+        }
+        return null;
+      });
       messenger.setMockMethodCallHandler(c.channel, (call) async {
         if (call.method == 'start') {
           await rx(report());
           return null;
+        }
+        if (call.method == 'exportCsv' || call.method == 'exportJson') {
+          expect((call.arguments as Map)['sessionId'], 'sync');
+          expect(stopped, isTrue);
+          return call.method == 'exportCsv'
+              ? 'event,session_id\nfinished:user_finish,sync\n'
+              : report();
         }
         if (call.method == 'authorizeControl') {
           expect((call.arguments as Map)['confirmed'], true);
@@ -89,7 +106,7 @@ void main() {
             'requestedPercent': 0.0,
             'stopRequest': true,
           };
-          history.add({'event': 'stop_requested', 'reason': 'manual_stop'});
+          history.add({'event': 'stop_requested', 'reason': 'user_finish'});
           history.add(stop!);
         }
         return report();
@@ -161,10 +178,26 @@ void main() {
             .map((e) => e['requestedPercent']),
         [0.5, 1.0, 0.5, 0.0],
       );
+      await tester.tap(find.text('Copiar CSV'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Copiar JSON'));
+      await tester.pumpAndSettle();
+      final finalReport = jsonDecode(copied.last) as Map;
+      expect(copied.first, contains('finished:user_finish,sync'));
+      expect(finalReport['sessionId'], 'sync');
+      expect(finalReport['recordState'], 'final');
+      expect(finalReport['manualControlEvents'].last['stopRequest'], true);
+      expect(
+        (finalReport['clientManualChanges'] as List)
+            .where((entry) => entry['event'] == 'slope_selected')
+            .map((entry) => entry['percent']),
+        [0.5, 1.0, 0.5, 0.0],
+      );
       await tester.pumpWidget(const SizedBox());
       session.dispose();
       debugDefaultTargetPlatformOverride = null;
       messenger.setMockMethodCallHandler(c.channel, null);
+      messenger.setMockMethodCallHandler(SystemChannels.platform, null);
       messenger.setMockMethodCallHandler(
         const MethodChannel('openbkool/training/events'),
         null,

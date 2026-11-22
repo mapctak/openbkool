@@ -118,15 +118,35 @@ class LatestManualChangeTest {
             s.tick(9999);assertEquals(2,s.frames.size);s.tick(10000);assertEquals(3,s.frames.size)
         }
     }
-    @Test fun latestWinsAndDuplicateOfAcceptedGoalCancelsDeferredIncrease() {
+    @Test fun flatReplacesDeferredIncreaseEvenIfZeroPreviouslyReturned() {
         val s=Sim();s.arm();s.c.request(3.0);s.tick(5000)
         for((t,p) in listOf(5100L to 2.0,5200L to 1.0,5300L to 0.0)) {s.now=t;s.c.request(p)}
         s.tick(5999);assertEquals(2,s.frames.size);s.tick(6000)
         assertEquals(0.0,(s.c.snapshot()["lastManualApiSuccess"] as Map<*,*>)["requestedPercent"])
         assertEquals(3,s.frames.size)
         s.now=6100;s.c.request(3.0);s.now=6200;s.c.request(0.0)
-        assertNull(s.pending());s.tick(7000);assertEquals(3,s.frames.size)
+        assertEquals(0.0,s.pending()!!["percent"]);s.tick(7000);assertEquals(4,s.frames.size)
     }
+    @Test fun negativeThenFlatThenPositiveKeepsFlatAheadOfEarlierAndLaterPendingChanges() {
+        val s = Sim()
+        s.arm()
+        s.c.request(-2.0)
+        assertEquals("33 FF FF FF FF 58 4D FF", s.frames.last().second)
+        s.now = 100
+        s.c.request(3.0)
+        s.now = 200
+        assertEquals("manual_pending", s.c.request(0.0)["event"])
+        assertTrue(s.events.any { it["reason"] == "superseded_by_flat" })
+        s.now = 300
+        assertEquals("flat_pending", s.c.request(2.0)["reason"])
+        s.tick(1000)
+        assertEquals("33 FF FF FF FF 20 4E FF", s.frames.last().second)
+        s.now = 2000
+        s.c.request(2.0)
+        assertEquals(listOf(-2.0, 0.0, 2.0), s.events.filter { it["event"] == "api_returned" }
+            .map { it["requestedPercent"] })
+    }
+
     @Test fun pendingZeroCancelledByStopBackgroundScreenExitOrLinkLossNeverReappears() {
         for(reason in listOf("manual_stop","app_background","screen_closed","channel_closed")) {
             val s=Sim();s.arm();s.c.request(3.0);s.now=100;s.c.request(0.0)

@@ -178,21 +178,25 @@ internal class ManualAntControl(
             "nativeAdmissionMs" to admittedAt - requestedAt, "rapidAdjustment" to rapidAdjustment)
         event("request", requestFields + mapOf("attempt" to attempts))
         val bytes = try { encodePro1Slope(percent) } catch (_: IllegalArgumentException) {
-            return event("rejected", mapOf("reason" to "invalid_slope", "requestId" to attempts, "apiCalled" to false))
+            return event("rejected", requestFields + mapOf("reason" to "invalid_slope", "apiCalled" to false))
         }
         val reason = when {
             stopped || faulted || stopIntent.get() != null -> "session_requires_reconnect"
             !enabled -> "explicit_activation_required"
             else -> abortReason()
         }
-        if (reason != null) return event("rejected", mapOf("reason" to reason, "attempt" to attempts))
+        if (reason != null) return event("rejected", requestFields + mapOf("reason" to reason, "apiCalled" to false))
+        if (percent != 0.0 && pendingDesired?.percent == 0.0) {
+            return event("rejected", requestFields + mapOf("reason" to "flat_pending", "apiCalled" to false))
+        }
         lastManualRejection = null
         // Returning to the accepted goal cancels a different deferred change too.
-        if (lastSubmitted == percent) {
+        if (lastSubmitted == percent && percent != 0.0) {
             cancelPending("latest_matches_accepted")
             return event("duplicate_skipped", mapOf("requestedPercent" to percent))
         }
         val previous = pendingDesired
+        if (previous != null) cancelPending(if (percent == 0.0) "superseded_by_flat" else "superseded_by_manual")
         val transportDueAt = lastAttemptAt?.plus(ManualControlPolicy.MIN_COMMAND_MS) ?: 0
         // An idle step is immediate. Only work that would already have to wait
         // gets a short quiet window, where another step can replace it.

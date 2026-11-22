@@ -51,9 +51,10 @@ class AntTrainerSearchController extends ChangeNotifier {
         (m['pendingManualChange'] as Map?)?['percent'] as num?;
   }
 
-  void _clientEvent(String event, double? percent) {
+  void _clientEvent(String event, double? percent, {String? error}) {
     _clientSlopeEvents.add({
       'event': event,
+      'error': ?error,
       'percent': percent,
       'timestampUtc': DateTime.now().toUtc().toIso8601String(),
       'sessionId': snapshot['sessionId'],
@@ -78,10 +79,13 @@ class AntTrainerSearchController extends ChangeNotifier {
     String? sessionId,
     bool rapidAdjustment,
   ) {
-    if (_disposed ||
-        manualStopping ||
+    if (_disposed) return Future.value();
+    _clientEvent('slope_selected', percent);
+    if (manualStopping ||
         controlTransportUncertain ||
         !acceptingManualChanges) {
+      _clientEvent('rejected_client_control_unavailable', percent);
+      _notify();
       return Future.value();
     }
     final wanted = _DeferredSlope(
@@ -91,12 +95,17 @@ class AntTrainerSearchController extends ChangeNotifier {
       rapidAdjustment,
     );
     final previous = _nextSlope;
+    if (previous?.percent == 0 && percent != 0) {
+      _clientEvent('rejected_flat_pending', percent);
+      _notify();
+      return Future.value();
+    }
     if (previous != null) {
       _clientEvent('superseded_before_native', previous.percent);
       previous.done.complete();
     }
     _nextSlope = wanted;
-    _clientEvent('selected_for_native', percent);
+    _clientEvent('queued_for_native', percent);
     if (!_slopePumping) unawaited(_pumpSlopes());
     _notify();
     return wanted.done.future;
@@ -119,6 +128,7 @@ class AntTrainerSearchController extends ChangeNotifier {
           break;
         }
         _activeSlope = wanted;
+        _clientEvent('dispatched_to_native', wanted.percent);
         await _performManualAction(
           'setManualSlope',
           percent: wanted.percent,
@@ -313,6 +323,31 @@ class AntTrainerSearchController extends ChangeNotifier {
     }
   }
 
+  Future<String?> exportCsv(String sessionId) =>
+      channel.invokeMethod<String>('exportCsv', {'sessionId': sessionId});
+
+  Future<Map<String, Object?>?> exportJson(
+    String sessionId, {
+    required bool finalized,
+  }) async {
+    final clientEvents = _clientSlopeEvents
+        .where((event) => event['sessionId'] == sessionId)
+        .toList();
+    final dropped = snapshot['sessionId'] == sessionId
+        ? _droppedClientSlopeEvents
+        : null;
+    final report = await channel.invokeMapMethod<String, Object?>(
+      'exportJson',
+      {'sessionId': sessionId, 'final': finalized},
+    );
+    if (report == null || report['sessionId'] != sessionId) return null;
+    return {
+      ...report,
+      'clientManualChanges': clientEvents,
+      'droppedClientManualChanges': ?dropped,
+    };
+  }
+
   Future<void> authorizeControl(String sessionId) => _performManualAction(
     'authorizeControl',
     confirmed: true,
@@ -353,9 +388,12 @@ class AntTrainerSearchController extends ChangeNotifier {
       if (report != null && generation == _manualGeneration) _update(report);
     } catch (error) {
       if (generation == _manualGeneration) {
+        _clientEvent('platform_error', percent, error: error.toString());
         snapshot = {
           ...snapshot,
-          'clientError': 'Control manual: $error',
+          'clientError': percent == 0
+              ? 'LLANO no se pudo confirmar en la API ANT · $error'
+              : 'Control manual: $error',
           'controlTransportUncertain': true,
         };
       }

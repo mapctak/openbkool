@@ -34,6 +34,25 @@ class AntIdentificationTimingTest {
         assertEquals(15L, snapshot["channelOpenApiDurationMs"])
         assertEquals(0, (snapshot["pageRequest"] as Map<*,*>)["attempts"])
     }
+    @Test fun longWaitDoesNotPromoteProductOrForeignFrameAndRecoversWithValidPage50() {
+        val r = Rig()
+        r.timing.channelOpened(1)
+        r.timing.receive(r.page(0x10, 0, 0, 0, 0x86, 0x0d, 0, 0))
+        r.now += 53_000
+        r.timing.receive(r.page(0x51, 255, 6, 3, 1, 2, 3, 4))
+        repeat(2) { r.timing.availability(false, listOf("manufacturer_model_not_verified"), true) }
+        assertEquals(true, r.timing.snapshot()["manufacturerWaitLong"])
+        assertEquals(1, r.events.count { it["milestone"] == "manufacturer_model_wait_long" })
+        assertNull(r.timing.snapshot()["lastPage50"])
+        assertNotNull(r.timing.snapshot()["lastPage51"])
+        r.timing.receive(r.page(0x50, 255, 255, 255, 67, 0, 22, 0, tx = 6))
+        assertNull(r.timing.snapshot()["lastPage50"])
+        r.timing.receive(r.page(0x50, 255, 255, 255, 67, 0, 22, 0))
+        r.timing.availability(true, emptyList(), true)
+        assertEquals(false, r.timing.snapshot()["manufacturerWaitLong"])
+        assertEquals(22, (r.timing.snapshot()["lastPage50"] as Map<*, *>)["modelNumber"])
+        assertEquals(53_000L, (r.timing.snapshot()["milestonesMs"] as Map<*, *>)["controlAvailable"])
+    }
     @Test fun foreignIdentityWrongModelAndPage51CannotVerifyManufacturer() {
         val r = Rig()
         r.timing.receive(r.page(0x50,255,255,255,67,0,22,0, number=1))
