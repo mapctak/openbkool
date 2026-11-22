@@ -180,6 +180,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         @Volatile private var radioDead = false
         private val stopReplies = mutableListOf<MethodChannel.Result>()
         val waitingManualChanges = java.util.concurrent.atomic.AtomicInteger(0)
+        private val virtualElevation = if (training) VirtualElevation() else null
         private val manualEvents = ArrayDeque<Map<String, Any?>>()
         private var droppedManualEvents = 0
         private var stopDrainUntilMs = 0L
@@ -193,6 +194,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 manual.recordApiEntry()
                 selectedChannel.setBroadcastData(payload)
             }, { e ->
+                if (e["event"] == "api_returned" && e["periodicRefresh"] != true && e["stopRequest"] != true) {
+                    (e["requestedPercent"] as? Double)?.let { virtualElevation?.accepted(it) }
+                }
+                if (e["event"] == "stop_requested" || e["event"] == "api_error") virtualElevation?.unavailable()
                 val entry = e + mapOf("timestamp" to now(), "sessionId" to id)
                 if (manualEvents.size >= 2000) { manualEvents.removeFirst(); droppedManualEvents++ }
                 manualEvents.addLast(entry)
@@ -459,6 +464,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 "selectedDevice" to target.toMap(),
                 "channelMode" to if (dedicated) "dedicated_bidirectional_manual_opt_in" else "background_receive_only",
                 "connectionState" to if (finished) "closed" else if (identityVerified) "identity_verified" else "waiting_for_identity",
+                "virtualElevation" to virtualElevation?.snapshot(),
                 "telemetry" to telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()),
                 "csvFile" to csvFile, "csvError" to csvError,
                 "status" to status, "running" to !finished, "stage" to stage,
@@ -746,7 +752,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                     "event" to "ant_received_screen_off", "receivedAtMs" to receivedAt,
                     "page" to (decoded.payload[0].toInt() and 255)))
                 identificationTiming.receive(decoded, receivedAt)
-                telemetry!!.receive(decoded, receivedAt)
+                val page = telemetry!!.receive(decoded, receivedAt)
+                if (page?.page == 0x10) virtualElevation?.observe(telemetry.distanceMeters, telemetry.distanceIntervalValid)
                 observeBkoolPage11(decoded.payload)?.let { manual.observePage11(it, receivedAt) }
                 if ((decoded.payload[0].toInt() and 255) !in listOf(0x50, 0x51)) record("page", decoded.payload)
             }

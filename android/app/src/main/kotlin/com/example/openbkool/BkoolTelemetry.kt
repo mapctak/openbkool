@@ -41,7 +41,8 @@ internal class BkoolTelemetry(private val startedMs: Long,
     private var cadence: Int? = null
     private var counter: Int? = null
     private var distanceAt: Long? = null
-    private var distance = 0L
+    var distanceMeters = 0L; private set
+    var distanceIntervalValid = false; private set
     private var partial = false
     private var signalLost = false
     private var page11: Map<String, Any?>? = null
@@ -57,6 +58,7 @@ internal class BkoolTelemetry(private val startedMs: Long,
         when (p.page) {
             0x10 -> {
                 speed = p.speedKmh; speedAt = ms
+                distanceIntervalValid = false
                 val next = p.distanceCounter!!
                 // Never invent complete turns of the counter or distance before this session.
                 if (counter != null) {
@@ -65,7 +67,8 @@ internal class BkoolTelemetry(private val startedMs: Long,
                     if (gap >= 10000 || delta > 65.534 * (gap / 1000.0 + 1) + 2) {
                         partial = true // gap/reset cannot be reconstructed safely
                     } else {
-                        distance += delta
+                        distanceMeters += delta
+                        distanceIntervalValid = p.speedKmh != null && 65.534 * gap / 1000 < 256
                         // More than one turn is theoretically possible at the max valid speed.
                         if (65.534 * gap / 1000 >= 256) partial = true
                     }
@@ -92,7 +95,7 @@ internal class BkoolTelemetry(private val startedMs: Long,
             "partial" to (state == "receiving" && (!freshSpeed || !freshPower || speed == null || power == null || cadence == null)),
             "signal" to state, "speedKmh" to speed.takeIf { freshSpeed },
             "powerW" to power.takeIf { freshPower }, "cadenceRpm" to cadence.takeIf { freshPower },
-            "distanceM" to distance, "distancePartial" to partial,
+            "distanceM" to distanceMeters, "distancePartial" to partial,
             "speedAgeMs" to speedAt?.let { ms - it }, "powerAgeMs" to powerAt?.let { ms - it },
             "signalAgeMs" to lastReceivedMs?.let { ms - it }, "elapsedMs" to ms - startedMs,
             "deviceNumber" to target.number, "deviceType" to target.type, "transmissionType" to target.transmission,

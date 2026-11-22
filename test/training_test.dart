@@ -93,6 +93,8 @@ void main() {
       });
       dropdown = tester.widget<DropdownButton<double>>(selector);
       expect(dropdown.onChanged, isNotNull);
+      await tester.tap(find.byTooltip('Exportar entrenamiento'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar JSON parcial'));
       await tester.pumpAndSettle();
       expect(jsonDecode(copied.single)['recordState'], 'partial');
@@ -114,7 +116,7 @@ void main() {
       expect(c.running, isTrue);
       expect(c.snapshot['sessionId'], 'session');
       expect(calls, hasLength(2));
-      expect(find.textContaining('Servicio Android activo'), findsOneWidget);
+      expect(find.text('ANT · Conectado'), findsOneWidget);
       nativeReport = {
         ...initial,
         'running': false,
@@ -140,9 +142,13 @@ void main() {
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
       expect(tester.widget<DropdownButton<double>>(selector).onChanged, isNull);
-      expect(find.text('Motivo de parada · user_finish'), findsOneWidget);
-      expect(find.textContaining('Servicio Android activo'), findsNothing);
+      expect(c.snapshot['status'], 'user_finish');
+      expect(find.text('ANT · Desconectado'), findsOneWidget);
+      await tester.tap(find.byTooltip('Exportar entrenamiento'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar CSV'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Exportar entrenamiento'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar JSON'));
       await tester.pumpAndSettle();

@@ -82,7 +82,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.textContaining('Servicio Android activo'), findsOneWidget);
+      expect(find.text('ANT · Conectado'), findsOneWidget);
       expect(find.text('Autorizar rango completo'), findsNothing);
       expect(find.text('DETENER ENTRENAMIENTO'), findsOneWidget);
       expect(calls, isEmpty);
@@ -128,7 +128,7 @@ void main() {
         'mode': 'training_connected',
         'device': const SavedTrainer(123, 112, 6).device,
       });
-      expect(find.text('Conectando'), findsOneWidget);
+      expect(find.text('ANT · Conectando'), findsOneWidget);
       training.emit({
         'running': true,
         'status': 'running',
@@ -138,15 +138,18 @@ void main() {
         'telemetry': {'signal': 'receiving'},
       });
       await tester.pumpAndSettle();
-      expect(find.text('Conectado'), findsOneWidget);
+      expect(find.text('ANT · Conectado'), findsOneWidget);
       training.emit({
         'running': false,
         'status': 'start_error',
         'clientError': 'radio unavailable',
       });
       await tester.pumpAndSettle();
-      expect(find.text('Error de conexión'), findsOneWidget);
-      expect(find.text('radio unavailable'), findsOneWidget);
+      expect(find.text('ANT · Error de conexión'), findsOneWidget);
+      expect(
+        find.text('No se pudo conectar. Revisa ANT y los permisos.'),
+        findsOneWidget,
+      );
       await tester.pumpWidget(const SizedBox());
       session.dispose();
     },
@@ -290,13 +293,9 @@ void main() {
       final list = find.byType(Scrollable).first;
       await tester.scrollUntilVisible(find.text('200'), 150, scrollable: list);
       expect(find.text('200'), findsOneWidget);
-      await tester.scrollUntilVisible(
-        find.text('00:01:01'),
-        150,
-        scrollable: list,
-      );
+      expect(find.text('00:01:01'), findsOneWidget);
       expect(find.text('1,23 km'), findsOneWidget);
-      expect(find.text('80 RPM'), findsOneWidget);
+      expect(find.text('80'), findsOneWidget);
       expect(training.starts, isEmpty);
       expect(tester.takeException(), isNull);
       await training.stop();

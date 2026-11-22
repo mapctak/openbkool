@@ -80,11 +80,11 @@ void main() {
         return report();
       });
       await show(tester, c);
-      await tester.tap(find.widgetWithText(OutlinedButton, '+'));
+      await tester.tap(find.byTooltip('Aumentar pendiente'));
       await tester.pumpAndSettle();
       select(tester, 3);
       await tester.pumpAndSettle();
-      await tester.tap(find.text('LLANO 0 %'));
+      select(tester, 0);
       await tester.pumpAndSettle();
       expect(calls.map((call) => call['percent']), [0.5, 3.0, 0.0]);
       expect(calls.map((call) => call['rapidAdjustment']), [true, null, null]);
@@ -109,28 +109,31 @@ void main() {
       await tester.pump();
       select(tester, 1);
       await tester.pump();
-      await tester.tap(find.text('LLANO 0 %'));
+      select(tester, 0);
       await tester.pump();
       expect(calls.length, 1);
       expect(c.pendingManualPercent, 0);
       expect(
-        find.text('Última pendiente aceptada por la API · +3,0 %'),
-        findsOneWidget,
+        (c.snapshot['manualControl']
+            as Map)['lastManualApiSuccess']['requestedPercent'],
+        3,
       );
-      expect(find.text('Cambio pendiente · 0,0 %'), findsOneWidget);
+      expect(find.text('LLANO 0 %'), findsNothing);
       first.complete(report(pending: 2));
       await tester.pumpAndSettle();
       expect(calls.map((e) => (e.arguments as Map)['percent']), [2, 0]);
       expect(
-        find.text('Última pendiente aceptada por la API · +3,0 %'),
-        findsOneWidget,
+        (c.snapshot['manualControl']
+            as Map)['lastManualApiSuccess']['requestedPercent'],
+        3,
       );
       expect(c.pendingManualPercent, 0);
       c.emit(report(accepted: 0));
       await tester.pumpAndSettle();
       expect(
-        find.text('Última pendiente aceptada por la API · 0,0 %'),
-        findsOneWidget,
+        (c.snapshot['manualControl']
+            as Map)['lastManualApiSuccess']['requestedPercent'],
+        0,
       );
       expect(find.textContaining('Cambio pendiente ·'), findsNothing);
       expect(

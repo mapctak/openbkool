@@ -128,29 +128,30 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.text('Última pendiente aceptada por la API · —'),
-        findsOneWidget,
+        (c.snapshot['manualControl'] as Map)['lastManualApiSuccess'],
+        isNull,
       );
+      expect(find.text('LLANO 0 %'), findsNothing);
       for (final step in [
-        ('+', '+0,5'),
-        ('+', '+1,0'),
-        ('−', '+0,5'),
-        ('LLANO 0 %', '0,0'),
+        ('Aumentar pendiente', 0.5),
+        ('Aumentar pendiente', 1.0),
+        ('Disminuir pendiente', 0.5),
+        ('Disminuir pendiente', 0.0),
       ]) {
         final old = Map<String, Object?>.from(c.snapshot);
-        await tester.tap(find.widgetWithText(OutlinedButton, step.$1));
+        await tester.tap(find.byTooltip(step.$1));
         await tester.pumpAndSettle();
         expect(
-          find.text('Última pendiente aceptada por la API · ${step.$2} %'),
-          findsOneWidget,
+          (c.snapshot['manualControl']
+              as Map)['lastManualApiSuccess']['requestedPercent'],
+          step.$2,
         );
-        await rx(
-          old,
-        ); // Delayed pre-command telemetry snapshot must not roll back slope.
+        await rx(old);
         await tester.pump();
         expect(
-          find.text('Última pendiente aceptada por la API · ${step.$2} %'),
-          findsOneWidget,
+          (c.snapshot['manualControl']
+              as Map)['lastManualApiSuccess']['requestedPercent'],
+          step.$2,
         );
         await rx({
           ...report(),
@@ -158,17 +159,17 @@ void main() {
         });
         await tester.pump();
         expect(
-          find.text('Última pendiente aceptada por la API · ${step.$2} %'),
-          findsOneWidget,
+          (c.snapshot['manualControl']
+              as Map)['lastManualApiSuccess']['requestedPercent'],
+          step.$2,
         );
       }
       await tester.tap(find.text('DETENER ENTRENAMIENTO'));
       await tester.pumpAndSettle();
       expect(
-        find.text(
-          '0 % solicitado al detener. Resistencia física sin confirmar.',
-        ),
-        findsOneWidget,
+        (c.snapshot['manualControl']
+            as Map)['lastStopCommand']['requestedPercent'],
+        0.0,
       );
       expect(
         history
@@ -178,7 +179,11 @@ void main() {
             .map((e) => e['requestedPercent']),
         [0.5, 1.0, 0.5, 0.0],
       );
+      await tester.tap(find.byTooltip('Exportar entrenamiento'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar CSV'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Exportar entrenamiento'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar JSON'));
       await tester.pumpAndSettle();
