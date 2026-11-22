@@ -204,18 +204,6 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                                 'No se pudo mantener la conexión. Puedes finalizar y volver a conectar o buscar el rodillo.',
                               ),
                             ),
-                          const SizedBox(height: 16),
-                          TextButton.icon(
-                            onPressed: session.loading || session.locked
-                                ? null
-                                : chooseTrainer,
-                            icon: const Icon(Icons.search),
-                            label: Text(
-                              session.connection == TrainerConnection.error
-                                  ? 'Buscar rodillos'
-                                  : 'Cambiar o buscar rodillo',
-                            ),
-                          ),
                         ],
                       ),
                     ),

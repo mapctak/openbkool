@@ -122,13 +122,12 @@ void main() {
       expect(find.text('Control manual 1.4'), findsNothing);
       await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Conectar rodillo por ANT'));
-      await tester.pumpAndSettle();
       expect(training.starts.single, {
         'mode': 'training_connected',
         'device': const SavedTrainer(123, 112, 6).device,
       });
       expect(find.text('ANT · Conectando'), findsOneWidget);
+      expect(find.textContaining('Buscando rodillo'), findsOneWidget);
       training.emit({
         'running': true,
         'status': 'running',
@@ -147,9 +146,20 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('ANT · Error de conexión'), findsOneWidget);
       expect(
-        find.text('No se pudo conectar. Revisa ANT y los permisos.'),
+        find.text(
+          'No se pudo conectar. Revisa el rodillo, ANT y los permisos.',
+        ),
         findsOneWidget,
       );
+      await tester.tap(find.text('Reintentar conexión'));
+      await tester.pumpAndSettle();
+      expect(training.starts, hasLength(2));
+      expect(training.starts.last, training.starts.first);
+      expect(find.textContaining('Buscando rodillo'), findsOneWidget);
+      await tester.tap(find.text('DETENER ENTRENAMIENTO'));
+      await tester.pumpAndSettle();
+      expect(training.stops, 1);
+      expect(find.textContaining('CALENTAMIENTO'), findsNothing);
       await tester.pumpWidget(const SizedBox());
       session.dispose();
     },
@@ -157,6 +167,23 @@ void main() {
   testWidgets(
     'settings exposes intact advanced tools and preserves BLE page across visits',
     (tester) async {
+      const trainingEvents = MethodChannel('openbkool/training/events');
+      messenger.setMockMethodCallHandler(trainingEvents, (call) async {
+        if (call.method == 'listen') {
+          await messenger.handlePlatformMessage(
+            trainingEvents.name,
+            const StandardMethodCodec().encodeSuccessEnvelope({
+              'running': false,
+              'status': 'not_started',
+            }),
+            (_) {},
+          );
+        }
+        return null;
+      });
+      addTearDown(
+        () => messenger.setMockMethodCallHandler(trainingEvents, null),
+      );
       final radio = TestBlePlatform();
       FlutterBluePlusPlatform.instance = radio;
       await tester.binding.setSurfaceSize(const Size(1000, 1800));

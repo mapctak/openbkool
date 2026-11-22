@@ -227,6 +227,7 @@ class AntTrainerSearchController extends ChangeNotifier {
 
   Future<void> start(String mode, {Map<String, Object?>? device}) async {
     if (running || commandBusy) return;
+    var generation = _manualGeneration;
     commandBusy = true;
     _notify();
     try {
@@ -236,9 +237,9 @@ class AntTrainerSearchController extends ChangeNotifier {
         );
       }
       await _listen();
-      if (_disposed || running) return;
+      if (_disposed || running || generation != _manualGeneration) return;
       final training = mode == 'training_connected';
-      _manualGeneration++;
+      generation = ++_manualGeneration;
       _cancelDeferredSlope("new_session");
       _clientSlopeEvents.clear();
       _droppedClientSlopeEvents = 0;
@@ -265,6 +266,7 @@ class AntTrainerSearchController extends ChangeNotifier {
           'operationEvents': <Object?>[],
           'csvError': null,
           'telemetry': null,
+          'virtualElevation': null,
           'devices': <Object?>[],
           'connectionState': 'waiting_for_identity',
           'channelMode': 'dedicated_bidirectional_manual_opt_in',
@@ -274,6 +276,7 @@ class AntTrainerSearchController extends ChangeNotifier {
         'status': 'starting',
         'running': true,
         'clientError': null,
+        'clientErrorCode': null,
         'resourcesReleased': null,
       };
       _notify();
@@ -282,16 +285,20 @@ class AntTrainerSearchController extends ChangeNotifier {
         'device': ?device,
       });
     } catch (error) {
+      if (generation != _manualGeneration) return;
+      final code = error is PlatformException ? error.code : null;
+      final cancelled = code == 'training_start_cancelled';
       snapshot = {
         ...snapshot,
-        'status': 'start_error',
+        'status': cancelled ? 'user_finish' : 'start_error',
         'running': false,
-        'clientError': error.toString(),
+        'clientError': cancelled ? null : error.toString(),
+        'clientErrorCode': cancelled ? null : code,
         if (error is PlatformException && error.details is Map)
           ...Map<String, Object?>.from(error.details as Map),
       };
     } finally {
-      commandBusy = false;
+      commandBusy = manualStopping || _manualCommands > 0;
       _notify();
     }
   }

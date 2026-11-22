@@ -27,6 +27,8 @@ void main() {
     bool eligible = true,
   }) => {
     'sessionId': 'latest',
+    'selectedDevice': SavedTrainer.known.device,
+    'connectionState': 'identity_verified',
     'running': !stopped,
     'manualSessionPolicy': {'physicalEnabled': true},
     'manualControl': {
@@ -44,7 +46,7 @@ void main() {
       if (error) 'lastApiError': {'error': 'simulated zero failed'},
       'lastRequestedPercent': pending ?? accepted,
     },
-    'telemetry': {'powerW': 80, 'elapsedMs': 188458},
+    'telemetry': {'signal': 'receiving', 'powerW': 80, 'elapsedMs': 188458},
   };
   Future<void> show(WidgetTester tester, LatestUiController c) async {
     await tester.binding.setSurfaceSize(const Size(1200, 2400));

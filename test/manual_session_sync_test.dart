@@ -30,6 +30,8 @@ void main() {
       final history = <Map<String, Object?>>[];
       Map<String, Object?> report() => {
         'sessionId': 'sync',
+        'selectedDevice': SavedTrainer.known.device,
+        'connectionState': 'identity_verified',
         'reportSequence': ++sequence,
         'running': sequence > 1 && !stopped,
         'status': stopped ? 'user_finish' : 'running',

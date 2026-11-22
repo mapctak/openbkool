@@ -51,7 +51,11 @@ class _TrainingPageState extends State<TrainingPage> {
         ],
       ),
     );
-    if (consent == true && mounted) {
+    if (consent == true &&
+        mounted &&
+        !cancelled &&
+        widget.session.training.snapshot['sessionId'] == id &&
+        readyForControl(widget.session.training.snapshot)) {
       await widget.session.training.authorizeControl(id);
     }
   }
@@ -67,21 +71,138 @@ class _TrainingPageState extends State<TrainingPage> {
     );
   }
 
-  Future<void> connect() async {
-    await widget.session.connect();
-    if (!mounted) return;
-    final error = widget.session.training.snapshot['clientError'];
-    if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'No se pudo conectar · $error',
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      );
+  bool starting = false;
+  bool pendingEntry = true;
+  bool cancelled = false;
+  bool showCompletion = false;
+  String? warmedSession;
+  Timer? completionTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    final session = widget.session;
+    final report = session.training.snapshot;
+    if (readyForControl(report)) warmedSession = report['sessionId'] as String?;
+    session.addListener(checkWarmup);
+    pendingEntry = !session.training.running;
+    if (pendingEntry) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || cancelled) return;
+        setState(() => pendingEntry = false);
+        unawaited(connect());
+      });
     }
+  }
+
+  @override
+  void dispose() {
+    widget.session.removeListener(checkWarmup);
+    completionTimer?.cancel();
+    super.dispose();
+  }
+
+  bool readyForControl(Map<String, Object?> report) =>
+      report['sessionId'] is String &&
+      connectionFor(report, widget.session.selected) ==
+          TrainerConnection.connected &&
+      // Kotlin already checks channel, exact identity, 67/22 and freshness.
+      (report['manualControl'] as Map?)?['eligible'] == true &&
+      !widget.session.training.manualStopping &&
+      !widget.session.training.controlTransportUncertain;
+
+  void checkWarmup() {
+    final report = widget.session.training.snapshot;
+    final id = report['sessionId'];
+    if (cancelled || !readyForControl(report) || warmedSession == id) return;
+    completionTimer?.cancel();
+    setState(() {
+      warmedSession = id as String;
+      showCompletion = true;
+    });
+    completionTimer = Timer(const Duration(seconds: 2), () {
+      setState(() => showCompletion = false);
+    });
+  }
+
+  Future<void> connect() async {
+    final session = widget.session;
+    if (starting ||
+        session.loading ||
+        session.locked ||
+        session.preferenceError != null) {
+      return;
+    }
+    completionTimer?.cancel();
+    setState(() {
+      starting = true;
+      cancelled = false;
+      showCompletion = false;
+      warmedSession = null;
+    });
+    try {
+      await session.connect();
+    } finally {
+      if (mounted) setState(() => starting = false);
+    }
+  }
+
+  Future<void> stop({String reason = 'user_finish'}) async {
+    completionTimer?.cancel();
+    setState(() {
+      cancelled = true;
+      showCompletion = false;
+    });
+    await widget.session.training.stop(reason: reason);
+  }
+
+  Future<void> retry() async {
+    final controller = widget.session.training;
+    if (controller.running) {
+      await stop();
+      if (!mounted ||
+          controller.running ||
+          controller.controlTransportUncertain) {
+        return;
+      }
+    }
+    await connect();
+  }
+
+  String? connectionError(Map<String, Object?> report) {
+    final session = widget.session;
+    if (cancelled &&
+        session.training.running &&
+        session.training.controlTransportUncertain) {
+      return 'No se confirmó la parada. Pulsa Detener para reintentar.';
+    }
+    if (session.preferenceError != null && !session.training.running) {
+      return 'No se pudo leer el rodillo guardado. Revisa Ajustes.';
+    }
+    final manual = report['manualControl'] as Map?;
+    final link = manual?['link'] as Map?;
+    final manufacturer = link?['manufacturerId'];
+    final model = link?['modelNumber'];
+    if (session.training.running &&
+        ((manual?['blockingReasons'] as List?)?.contains('wrong_target') ==
+                true ||
+            (manufacturer != null && manufacturer != 67) ||
+            (model != null && model != 22))) {
+      return 'Rodillo no compatible con el control. Revisa Ajustes.';
+    }
+    if (session.connection != TrainerConnection.error) return null;
+    if (session.training.running) return 'Señal ANT interrumpida.';
+    return switch (report['clientErrorCode']) {
+      'training_service_blocked' || 'permission_request_failed' =>
+        'Revisa los permisos y las notificaciones de OpenBkool.',
+      'training_service_failed' || 'training_not_visible' =>
+        'Android no pudo iniciar el servicio de entrenamiento.',
+      'ant_busy' => 'ANT está ocupado. Espera a que termine el cierre.',
+      _ =>
+        report['status'] == 'radio_search_timeout'
+            ? 'No se encontró el rodillo guardado.'
+            : 'No se pudo conectar. Revisa el rodillo, ANT y los permisos.',
+    };
   }
 
   Future<void> export({required bool csv}) async {
@@ -133,12 +254,14 @@ class _TrainingPageState extends State<TrainingPage> {
         selected = (manual['lastRequestedPercent'] as num?)?.toDouble() ?? 0;
         if (!trainingSlopes.contains(selected)) selected = 0;
       }
-      final available =
-          c.running &&
-          id != null &&
-          manual['eligible'] == true &&
+      final available = id != null && readyForControl(report) && !cancelled;
+      final error = starting && !c.running ? null : connectionError(report);
+      final warmingUp =
+          !cancelled &&
           !c.manualStopping &&
-          !c.controlTransportUncertain;
+          (pendingEntry || starting || c.running) &&
+          (warmedSession == null || warmedSession != id) &&
+          error == null;
       final enabled = manual['enabled'] == true;
       final usable = available && enabled && c.acceptingManualChanges;
       final telemetry = report['telemetry'] as Map? ?? const {};
@@ -147,7 +270,7 @@ class _TrainingPageState extends State<TrainingPage> {
           ? distance.toDouble()
           : 0.0;
       final elapsed = telemetry['elapsedMs'] as num? ?? 0;
-      final connection = connectionFor(report, widget.session.selected);
+      final connection = widget.session.connection;
       final controls = Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -283,10 +406,10 @@ class _TrainingPageState extends State<TrainingPage> {
           ),
         ),
         child: PopScope(
-          canPop: !c.running && !c.commandBusy,
+          canPop: !starting && !c.running && !c.commandBusy,
           onPopInvokedWithResult: (didPop, _) async {
             if (didPop || c.manualStopping) return;
-            await c.stop(reason: 'screen_closed');
+            await stop(reason: 'screen_closed');
             if (context.mounted && !c.running && !c.commandBusy) {
               Navigator.pop(context);
             }
@@ -327,7 +450,10 @@ class _TrainingPageState extends State<TrainingPage> {
             bottomNavigationBar: SafeArea(
               minimum: const EdgeInsets.fromLTRB(16, 6, 16, 12),
               child: FilledButton.icon(
-                onPressed: c.running && !c.manualStopping ? c.stop : null,
+                onPressed:
+                    (c.running || (starting && !cancelled)) && !c.manualStopping
+                    ? stop
+                    : null,
                 icon: const Icon(Icons.stop_rounded),
                 label: FittedBox(
                   fit: BoxFit.scaleDown,
@@ -372,7 +498,11 @@ class _TrainingPageState extends State<TrainingPage> {
                             ),
                           ),
                         ),
-                        if (c.running && !usable && !c.manualStopping)
+                        if (c.running &&
+                            !warmingUp &&
+                            error == null &&
+                            !usable &&
+                            !c.manualStopping)
                           Text(
                             enabled
                                 ? 'Control no disponible'
@@ -413,26 +543,40 @@ class _TrainingPageState extends State<TrainingPage> {
                         ),
                       ],
                     ),
-                    if (!c.running)
-                      TextButton(
-                        onPressed:
-                            widget.session.loading || widget.session.locked
-                            ? null
-                            : connect,
-                        child: const Text('Conectar rodillo por ANT'),
+                    if (warmingUp)
+                      Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          connection == TrainerConnection.connected
+                              ? 'CALENTAMIENTO · Esperando identificación ANT…'
+                              : 'CALENTAMIENTO · Buscando rodillo…',
+                          style: const TextStyle(color: dashboardMuted),
+                        ),
                       )
-                    else if (!enabled && manual['stopped'] != true)
+                    else if (showCompletion && available)
+                      Semantics(
+                        liveRegion: true,
+                        child: const Text(
+                          '¡CALENTAMIENTO COMPLETADO!',
+                          style: TextStyle(color: dashboardAccent),
+                        ),
+                      ),
+                    if (available && !enabled)
                       TextButton(
-                        onPressed: available && !c.commandBusy
-                            ? () => authorize(id)
-                            : null,
+                        onPressed: !c.commandBusy ? () => authorize(id) : null,
                         child: const Text('Autorizar rango completo'),
                       ),
-                    if (!c.running && report['status'] == 'start_error')
-                      const Text(
-                        'No se pudo conectar. Revisa ANT y los permisos.',
-                        style: TextStyle(color: dashboardMuted),
+                    if (error != null && (!cancelled || c.running)) ...[
+                      Text(
+                        error,
+                        style: const TextStyle(color: dashboardMuted),
                       ),
+                      if (!cancelled && widget.session.preferenceError == null)
+                        TextButton(
+                          onPressed: c.commandBusy ? null : retry,
+                          child: const Text('Reintentar conexión'),
+                        ),
+                    ],
                     const SizedBox(height: 12),
                     if (constraints.maxWidth >= 680)
                       Row(
