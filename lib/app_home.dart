@@ -92,29 +92,6 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                 ),
                 onTap: chooseTrainer,
               ),
-              AnimatedBuilder(
-                animation: session,
-                builder: (context, _) => ListTile(
-                  leading: const Icon(Icons.lock_outline),
-                  title: const Text('Revocar permiso de pendiente'),
-                  subtitle: Text(
-                    session.consentError ??
-                        (session.hasControlConsent
-                            ? 'Autorizado para el rodillo seleccionado'
-                            : 'Sin autorización guardada para este rodillo'),
-                  ),
-                  enabled:
-                      session.hasControlConsent &&
-                      !session.loading &&
-                      !session.locked,
-                  onTap:
-                      session.hasControlConsent &&
-                          !session.loading &&
-                          !session.locked
-                      ? () => session.setControlConsent(false)
-                      : null,
-                ),
-              ),
               ListTile(
                 leading: const Icon(Icons.tune),
                 title: const Text('Diagnósticos avanzados'),

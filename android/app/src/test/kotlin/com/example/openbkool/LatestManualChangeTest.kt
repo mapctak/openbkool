@@ -18,7 +18,7 @@ class LatestManualChangeTest {
             c.recordApiEntry();frames.add(now to hex(bytes));inApi?.invoke(stop)
             if(fail)throw IllegalStateException("simulated IPC failure")
         }, {events.add(it);if(it["event"]=="api_attempt")beforeApi?.invoke(it)},manualPriorityWaiting={waiting}) }
-        fun arm()=c.enable(true)
+        fun arm()=c.enable()
         fun tick(t:Long){now=t;c.supervise();c.refreshTarget()}
         fun pending()=c.snapshot()["pendingManualChange"] as Map<*,*>?
     }

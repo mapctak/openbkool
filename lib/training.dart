@@ -8,7 +8,7 @@ import 'trainer_session.dart';
 import 'workout_dashboard.dart';
 
 final trainingSlopes = List<double>.unmodifiable(
-  List.generate(41, (index) => TrainerSession.minSlope + index * 0.5),
+  List.generate(41, (index) => -5 + index * 0.5),
 );
 
 String slopeLabel(num? value) => value == null
@@ -29,38 +29,6 @@ class _TrainingPageState extends State<TrainingPage>
   double selected = 0;
   String? sessionId;
 
-  Future<void> authorize(String id) async {
-    final consent = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Autorizar control de pendiente'),
-        content: const Text(
-          'Autorizo el rango de −5 % a +15 % para este rodillo en futuros entrenamientos. Las pendientes '
-          'negativas y superiores a +8 % son experimentales. La respuesta física '
-          'no está verificada para los 41 valores. '
-          'La API y una solicitud de 0 % no garantizan la resistencia del rodillo.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Guardar autorización'),
-          ),
-        ],
-      ),
-    );
-    if (consent == true &&
-        mounted &&
-        !cancelled &&
-        widget.session.training.snapshot['sessionId'] == id &&
-        readyForControl(widget.session.training.snapshot)) {
-      await widget.session.setControlConsent(true);
-    }
-  }
-
   void request(double percent, {bool rapid = false}) {
     setState(() => selected = percent);
     unawaited(
@@ -75,16 +43,20 @@ class _TrainingPageState extends State<TrainingPage>
   bool starting = false;
   bool pendingEntry = true;
   bool cancelled = false;
-  String? promptedSession;
+  String? announcedSession;
+  Timer? startBanner;
+  bool showStart = false;
   String? activationAttempt;
   bool checking = false;
-  bool prompting = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     final session = widget.session;
+    if (isActive(session.training.snapshot)) {
+      announcedSession = session.training.snapshot['sessionId'] as String;
+    }
     session.addListener(scheduleWarmup);
     scheduleWarmup();
     pendingEntry = !session.training.running;
@@ -99,6 +71,7 @@ class _TrainingPageState extends State<TrainingPage>
 
   @override
   void dispose() {
+    startBanner?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     widget.session.removeListener(scheduleWarmup);
     super.dispose();
@@ -119,54 +92,43 @@ class _TrainingPageState extends State<TrainingPage>
       !widget.session.training.manualStopping &&
       !widget.session.training.controlTransportUncertain;
 
+  bool isActive(Map<String, Object?> report) {
+    final manual = report['manualControl'] as Map?;
+    return readyForControl(report) &&
+        manual?['enabled'] == true &&
+        manual?['state'] == 'active';
+  }
+
   void scheduleWarmup() {
     if (checking) return;
     checking = true;
-    WidgetsBinding.instance.ensureVisualUpdate();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    scheduleMicrotask(() {
       checking = false;
       if (mounted) unawaited(checkWarmup());
     });
-  }
-
-  Future<void> askConsent(String id) async {
-    setState(() {
-      promptedSession = id;
-      prompting = true;
-    });
-    try {
-      await authorize(id);
-    } finally {
-      if (mounted) {
-        setState(() => prompting = false);
-        scheduleWarmup();
-      }
-    }
   }
 
   Future<void> checkWarmup() async {
     final session = widget.session;
     final c = session.training;
     final report = c.snapshot;
-    if (cancelled ||
-        prompting ||
-        session.loading ||
-        session.saving ||
-        c.commandBusy ||
-        !readyForControl(report)) {
-      return;
-    }
+    if (cancelled || session.loading || !readyForControl(report)) return;
     final id = report['sessionId'] as String;
-    if ((report['manualControl'] as Map)['enabled'] == true) return;
-    if (session.hasControlConsent) {
-      if (activationAttempt == id) return;
+    if (isActive(report)) {
+      if (announcedSession == id) return;
+      startBanner?.cancel();
+      setState(() {
+        announcedSession = id;
+        showStart = true;
+      });
+      startBanner = Timer(const Duration(seconds: 2), () {
+        setState(() => showStart = false);
+      });
+    } else if (!c.commandBusy &&
+        activationAttempt != id &&
+        (report['manualControl'] as Map)['everEnabled'] != true) {
       setState(() => activationAttempt = id);
-      await c.authorizeControl(id);
-    } else if (promptedSession != id &&
-        (WidgetsBinding.instance.lifecycleState == null ||
-            WidgetsBinding.instance.lifecycleState ==
-                AppLifecycleState.resumed)) {
-      await askConsent(id);
+      await c.activateControl(id);
     }
   }
 
@@ -182,7 +144,7 @@ class _TrainingPageState extends State<TrainingPage>
       starting = true;
       cancelled = false;
       activationAttempt = null;
-      promptedSession = null;
+      showStart = false;
     });
     try {
       await session.connect();
@@ -194,6 +156,7 @@ class _TrainingPageState extends State<TrainingPage>
   Future<void> stop({String reason = 'user_finish'}) async {
     setState(() {
       cancelled = true;
+      showStart = false;
     });
     await widget.session.training.stop(reason: reason);
   }
@@ -301,8 +264,7 @@ class _TrainingPageState extends State<TrainingPage>
       }
       final available = id != null && readyForControl(report) && !cancelled;
       final error = starting && !c.running ? null : connectionError(report);
-      final active =
-          available && manual['enabled'] == true && manual['state'] == 'active';
+      final active = available && isActive(report);
       final activationFailed =
           available && !active && activationAttempt == id && !c.commandBusy;
       final warmingUp =
@@ -317,7 +279,8 @@ class _TrainingPageState extends State<TrainingPage>
       final meters = distance != null && distance.isFinite && distance >= 0
           ? distance.toDouble()
           : 0.0;
-      final elapsed = telemetry['elapsedMs'] as num? ?? 0;
+      final trainingElapsed = report['trainingElapsedMs'] as num?;
+      final elapsed = trainingElapsed ?? (telemetry['elapsedMs'] as num? ?? 0);
       final connection = widget.session.connection;
       final controls = Row(
         mainAxisSize: MainAxisSize.min,
@@ -333,42 +296,18 @@ class _TrainingPageState extends State<TrainingPage>
           SizedBox(
             width: 106,
             child: Center(
-              child: DropdownButton<double>(
-                key: const ValueKey('trainingSlope'),
-                isExpanded: true,
-                menuWidth: 152,
-                selectedItemBuilder: (context) => [
-                  for (final value in trainingSlopes)
-                    Align(
-                      alignment: Alignment.center,
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(slopeLabel(value)),
-                      ),
-                    ),
-                ],
-                value: selected,
-                underline: const SizedBox.shrink(),
-                dropdownColor: dashboardPanel,
-                style: const TextStyle(
-                  fontSize: 19,
-                  fontFamily: 'Roboto',
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                  fontFeatures: [FontFeature.tabularFigures()],
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(
+                  slopeLabel(selected),
+                  key: const ValueKey('trainingSlope'),
+                  style: const TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
                 ),
-                items: [
-                  for (final value in trainingSlopes)
-                    DropdownMenuItem(
-                      value: value,
-                      child: Text(slopeLabel(value)),
-                    ),
-                ],
-                onChanged: usable
-                    ? (value) {
-                        if (value != null) request(value);
-                      }
-                    : null,
               ),
             ),
           ),
@@ -539,7 +478,9 @@ class _TrainingPageState extends State<TrainingPage>
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            'ANT · ${warmingUp ? 'CALENTAMIENTO' : connectionLabel(connection)}',
+                            warmingUp
+                                ? 'CALENTAMIENTO'
+                                : 'ANT · ${connectionLabel(connection)}',
                             style: const TextStyle(
                               fontSize: 12,
                               color: dashboardMuted,
@@ -558,7 +499,11 @@ class _TrainingPageState extends State<TrainingPage>
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            label('TIEMPO'),
+                            label(
+                              trainingElapsed == null
+                                  ? 'TIEMPO DE CALENTAMIENTO'
+                                  : 'TIEMPO DE ENTRENAMIENTO',
+                            ),
                             Text(
                               workoutTime(elapsed),
                               style: const TextStyle(
@@ -577,36 +522,17 @@ class _TrainingPageState extends State<TrainingPage>
                         ),
                       ],
                     ),
-                    if (warmingUp &&
-                        !activationFailed &&
-                        !c.controlTransportUncertain)
+                    if (active && showStart)
                       Semantics(
                         liveRegion: true,
-                        child: Text(
-                          available
-                              ? (widget.session.hasControlConsent
-                                    ? 'Activando control…'
-                                    : 'Permiso de control pendiente')
-                              : connection == TrainerConnection.connected
-                              ? 'Esperando identificación ANT…'
-                              : 'Buscando rodillo…',
-                          style: const TextStyle(color: dashboardMuted),
+                        child: const Text(
+                          '¡COMIENZA EL ENTRENAMIENTO!',
+                          style: TextStyle(color: dashboardAccent),
                         ),
-                      ),
-                    if (available &&
-                        !active &&
-                        !prompting &&
-                        !widget.session.hasControlConsent &&
-                        promptedSession == id)
-                      TextButton(
-                        onPressed: () => askConsent(id),
-                        child: const Text('Revisar permiso de control'),
                       ),
                     if (activationFailed ||
                         (c.running && c.controlTransportUncertain))
                       const Text('No se pudo activar el control.'),
-                    if (available && widget.session.consentError != null)
-                      Text(widget.session.consentError!),
                     if (error != null && (!cancelled || c.running)) ...[
                       Text(
                         error,

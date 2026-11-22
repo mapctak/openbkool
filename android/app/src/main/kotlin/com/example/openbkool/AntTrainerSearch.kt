@@ -107,7 +107,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             }
         } catch (_: RejectedExecutionException) { result?.success(latest) }
     }
-    fun manualAction(method: String, sessionId: String?, explicit: Boolean, percent: Double?,
+    fun manualAction(method: String, sessionId: String?, percent: Double?,
         result: MethodChannel.Result, requestedAtUtc: String?, rapidAdjustment: Boolean, uiQueueMs: Long?) {
         val requestedAt = android.os.SystemClock.elapsedRealtime()
         val session = active
@@ -120,7 +120,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             if (manualChange) session.waitingManualChanges.decrementAndGet()
             val cancelled = session.commandFence.dequeue()
             if (cancelled != null) session.rejectPending(method, percent, cancelled, result)
-            else session.manualAction(method, explicit, percent, result, requestedAt, requestedAtUtc, rapidAdjustment, uiQueueMs)
+            else session.manualAction(method, percent, result, requestedAt, requestedAtUtc, rapidAdjustment, uiQueueMs)
         } } catch (_: RejectedExecutionException) {
             session.commandFence.dequeue()
             if (manualChange) session.waitingManualChanges.decrementAndGet()
@@ -194,8 +194,14 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 manual.recordApiEntry()
                 selectedChannel.setBroadcastData(payload)
             }, { e ->
+                if (e["event"] == "enabled" && training && warmupElapsedMs == null) {
+                    warmupElapsedMs = (e.getValue("monotonicMs") as Long) - sessionStartedMs
+                }
                 if (e["event"] == "api_returned" && e["periodicRefresh"] != true && e["stopRequest"] != true) {
                     (e["requestedPercent"] as? Double)?.let { virtualElevation?.accepted(it) }
+                }
+                if (e["event"] == "stop_requested" && warmupElapsedMs != null) {
+                    trainingEndedMs = e.getValue("monotonicMs") as Long
                 }
                 if (e["event"] == "stop_requested" || e["event"] == "api_error") virtualElevation?.unavailable()
                 val entry = e + mapOf("timestamp" to now(), "sessionId" to id)
@@ -222,7 +228,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         private var receivedChannelId: Map<String, Any?>? = null
         private var identityReadbackError: Map<String, Any?>? = null
         private var lastManualAvailability: String? = null
-        private val telemetry = if (training) BkoolTelemetry(android.os.SystemClock.elapsedRealtime(), target) else null
+        private val sessionStartedMs = android.os.SystemClock.elapsedRealtime()
+        private var warmupElapsedMs: Long? = null
+        private var trainingEndedMs: Long? = null
+        private val telemetry = if (training) BkoolTelemetry(sessionStartedMs, target) else null
         private var csvFile: String? = null
         private var csv: java.io.BufferedWriter? = null
         private var csvError: String? = null
@@ -358,14 +367,14 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             publish()
             result.error("command_cancelled", "Orden cancelada por parada: $reason", null)
         }
-        fun manualAction(method: String, explicit: Boolean, percent: Double?, result: MethodChannel.Result,
+        fun manualAction(method: String, percent: Double?, result: MethodChannel.Result,
             requestedAt: Long, requestedAtUtc: String?, rapidAdjustment: Boolean, uiQueueMs: Long?) {
             if (finished || stopping || cancelled) {
                 result.error("session_stopping", "La sesión está cerrándose", null); return
             }
             trainingOwner?.failure()?.let { stopForServiceFailure(it, result); return }
             when (method) {
-                "authorizeControl" -> manual.enable(explicit)
+                "activateControl" -> manual.enable()
                 "setManualSlope" -> {
                     if (percent == null) { result.error("invalid_slope", "Pendiente numérica requerida", null); return }
                     record("slope_selection", null, mapOf("selectedPercent" to percent.takeIf { it.isFinite() },
@@ -434,6 +443,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                         "configuredChannelId" to configuredChannelId, "adapterChannelId" to adapterChannelId,
                         "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
             }
+            val reportMs = android.os.SystemClock.elapsedRealtime()
+            val totalElapsedMs = reportMs - sessionStartedMs
             val report = mapOf(
                 "controlDiagnosticsVersion" to 13,
                 "recordState" to if (finished) "final" else "partial",
@@ -462,10 +473,12 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                     else -> telemetry?.signal(android.os.SystemClock.elapsedRealtime())
                 },
                 "selectedDevice" to target.toMap(),
-                "channelMode" to if (dedicated) "dedicated_bidirectional_manual_opt_in" else "background_receive_only",
+                "channelMode" to if (dedicated) "dedicated_bidirectional_manual" else "background_receive_only",
                 "connectionState" to if (finished) "closed" else if (identityVerified) "identity_verified" else "waiting_for_identity",
                 "virtualElevation" to virtualElevation?.snapshot(),
-                "telemetry" to telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()),
+                "telemetry" to telemetry?.snapshot(reportMs),
+                "warmupElapsedMs" to if (training) warmupElapsedMs ?: totalElapsedMs else null,
+                "trainingElapsedMs" to warmupElapsedMs?.let { (trainingEndedMs ?: reportMs) - sessionStartedMs - it },
                 "csvFile" to csvFile, "csvError" to csvError,
                 "status" to status, "running" to !finished, "stage" to stage,
                 "mode" to mode, "startedAt" to startedAt, "updatedAt" to now(),

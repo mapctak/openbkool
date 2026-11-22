@@ -24,7 +24,7 @@ class ExpandedRangeRaceTest {
                     entered.countDown();check(release.await(2,TimeUnit.SECONDS))
                 }})
             try {
-                c.enable(true);c.request(15.0);time.set(5000)
+                c.enable();c.request(15.0);time.set(5000)
                 val refresh=worker.submit{c.refreshTarget()}
                 assertTrue(entered.await(2,TimeUnit.SECONDS))
                 c.invalidateTargets("manual_stop")
@@ -34,7 +34,7 @@ class ExpandedRangeRaceTest {
                 assertEquals(hex(encodePro1Slope(0.0)),frames.last())
                 val count=frames.size;time.set(7200000);c.refreshTarget();c.request(-5.0)
                 assertEquals(count,frames.size)
-                assertEquals("activation_rejected",c.enable(true)["event"])
+                assertEquals("activation_rejected",c.enable()["event"])
             } finally {release.countDown();worker.shutdownNow()}
         }
     }

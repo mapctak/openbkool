@@ -9,7 +9,7 @@ import 'package:openbkool/training.dart';
 
 void main() {
   testWidgets(
-    'the same authorized session survives pause and resume, then exports after native stop',
+    'the same activated session survives pause and resume, then exports after native stop',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1000, 1800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -19,21 +19,6 @@ void main() {
       final session = TrainerSession(training: c)..loading = false;
       const stream = MethodChannel('openbkool/training/events');
       final calls = <MethodCall>[];
-      String? savedConsent;
-      messenger.setMockMethodCallHandler(TrainerPreferences.channel, (
-        call,
-      ) async {
-        if (call.method == 'saveControlConsent') {
-          savedConsent = call.arguments as String?;
-        }
-        return savedConsent;
-      });
-      addTearDown(
-        () => messenger.setMockMethodCallHandler(
-          TrainerPreferences.channel,
-          null,
-        ),
-      );
       final copied = <String>[];
       final initial = <String, Object?>{
         'running': true,
@@ -89,30 +74,21 @@ void main() {
       await tester.pumpWidget(
         MaterialApp(home: TrainingPage(session: session)),
       );
-      final selector = find.byKey(const ValueKey('trainingSlope'));
-      var dropdown = tester.widget<DropdownButton<double>>(selector);
-      expect(
-        dropdown.items!.map((item) => item.value),
-        List.generate(41, (i) => -5 + 0.5 * i),
-      );
-      expect(dropdown.onChanged, isNull);
+      bool canIncrease() =>
+          tester
+              .widget<IconButton>(
+                find.byWidgetPredicate(
+                  (w) => w is IconButton && w.tooltip == 'Aumentar pendiente',
+                ),
+              )
+              .onPressed !=
+          null;
+      expect(trainingSlopes, List.generate(41, (i) => -5 + 0.5 * i));
       await tester.pumpAndSettle();
-      expect(find.text('Autorizar control de pendiente'), findsOneWidget);
-      await tester.tap(find.text('Cancelar'));
-      await tester.pumpAndSettle();
-      expect(calls, isEmpty);
-      await tester.tap(find.text('Revisar permiso de control'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Guardar autorización'));
-      await tester.pumpAndSettle();
-      expect(jsonDecode(savedConsent!)['deviceNumber'], 30064);
-      expect(calls.single.method, 'authorizeControl');
-      expect(calls.single.arguments, {
-        'sessionId': 'session',
-        'confirmed': true,
-      });
-      dropdown = tester.widget<DropdownButton<double>>(selector);
-      expect(dropdown.onChanged, isNotNull);
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(calls.single.method, 'activateControl');
+      expect(calls.single.arguments, {'sessionId': 'session'});
+      expect(canIncrease(), isTrue);
       await tester.tap(find.byTooltip('Exportar entrenamiento'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Copiar JSON parcial'));
@@ -161,7 +137,7 @@ void main() {
       await publish(nativeReport);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
-      expect(tester.widget<DropdownButton<double>>(selector).onChanged, isNull);
+      expect(canIncrease(), isFalse);
       expect(c.snapshot['status'], 'user_finish');
       expect(find.text('ANT · Desconectado'), findsOneWidget);
       await tester.tap(find.byTooltip('Exportar entrenamiento'));
@@ -187,7 +163,7 @@ void main() {
         'user_finish',
       );
       expect(calls.map((call) => call.method), [
-        'authorizeControl',
+        'activateControl',
         'exportJson',
         'exportCsv',
         'exportJson',

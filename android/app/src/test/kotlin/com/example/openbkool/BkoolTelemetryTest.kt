@@ -121,7 +121,7 @@ class BkoolTelemetryTest {
                     telemetry.receive(frame("19 BF 17 D2 05 1D 40 36"), now)
                 }
                 if (second == 0) {
-                    assertEquals("enabled", control.enable(true)["event"])
+                    assertEquals("enabled", control.enable()["event"])
                     control.request(0.5)
                 }
                 if (control.abortReason() == "link_lost:telemetry_not_fresh") {

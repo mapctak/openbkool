@@ -67,68 +67,61 @@ void main() {
     messenger.setMockMethodCallHandler(c.channel, null);
   }
 
-  void select(WidgetTester tester, double p) => tester
-      .widget<DropdownButton<double>>(
-        find.byKey(const ValueKey('trainingSlope')),
-      )
-      .onChanged!(p);
+  Future<void> lower(WidgetTester tester) async {
+    await tester.tap(find.byTooltip('Disminuir pendiente'));
+    await tester.pump();
+  }
 
-  testWidgets(
-    'step buttons mark adjustments while direct selection and LLANO stay immediate',
-    (tester) async {
-      final c = LatestUiController()..snapshot = report(accepted: 0);
-      final calls = <Map>[];
-      messenger.setMockMethodCallHandler(c.channel, (call) async {
-        calls.add(call.arguments as Map);
-        return report();
-      });
-      await show(tester, c);
-      await tester.tap(find.byTooltip('Aumentar pendiente'));
-      await tester.pumpAndSettle();
-      select(tester, 3);
-      await tester.pumpAndSettle();
-      select(tester, 0);
-      await tester.pumpAndSettle();
-      expect(calls.map((call) => call['percent']), [0.5, 3.0, 0.0]);
-      expect(calls.map((call) => call['rapidAdjustment']), [true, null, null]);
-      expect(calls.every((call) => call['uiQueueMs'] is int), isTrue);
-      await clean(tester, c);
-    },
-  );
+  testWidgets('step buttons mark adjustments including return to zero', (
+    tester,
+  ) async {
+    final c = LatestUiController()..snapshot = report(accepted: 0);
+    final calls = <Map>[];
+    messenger.setMockMethodCallHandler(c.channel, (call) async {
+      calls.add(call.arguments as Map);
+      return report();
+    });
+    await show(tester, c);
+    await tester.tap(find.byTooltip('Aumentar pendiente'));
+    await tester.pumpAndSettle();
+    await lower(tester);
+    await tester.pumpAndSettle();
+    expect(calls.map((call) => call['percent']), [0.5, 0.0]);
+    expect(calls.map((call) => call['rapidAdjustment']), [true, true]);
+    expect(calls.every((call) => call['uiQueueMs'] is int), isTrue);
+    await clean(tester, c);
+  });
 
   testWidgets(
     'rapid edits during native RPC retain only latest LLANO and show native pending until accepted',
     (tester) async {
-      final c = LatestUiController()..snapshot = report();
+      final c = LatestUiController()..snapshot = report(accepted: 1.5);
       final calls = <MethodCall>[];
       final first = Completer<Map<String, Object?>>();
       messenger.setMockMethodCallHandler(c.channel, (call) async {
         calls.add(call);
         if (calls.length == 1) return first.future;
-        return report(pending: 0);
+        return report(accepted: 1.5, pending: 0);
       });
       await show(tester, c);
-      select(tester, 2);
-      await tester.pump();
-      select(tester, 1);
-      await tester.pump();
-      select(tester, 0);
-      await tester.pump();
+      await lower(tester);
+      await lower(tester);
+      await lower(tester);
       expect(calls.length, 1);
       expect(c.pendingManualPercent, 0);
       expect(
         (c.snapshot['manualControl']
             as Map)['lastManualApiSuccess']['requestedPercent'],
-        3,
+        1.5,
       );
       expect(find.text('LLANO 0 %'), findsNothing);
-      first.complete(report(pending: 2));
+      first.complete(report(accepted: 1.5, pending: 1));
       await tester.pumpAndSettle();
-      expect(calls.map((e) => (e.arguments as Map)['percent']), [2, 0]);
+      expect(calls.map((e) => (e.arguments as Map)['percent']), [1.0, 0]);
       expect(
         (c.snapshot['manualControl']
             as Map)['lastManualApiSuccess']['requestedPercent'],
-        3,
+        1.5,
       );
       expect(c.pendingManualPercent, 0);
       c.emit(report(accepted: 0));
@@ -152,7 +145,7 @@ void main() {
   testWidgets(
     'stop discards client deferred input and late RPC cannot restore it',
     (tester) async {
-      final c = LatestUiController()..snapshot = report();
+      final c = LatestUiController()..snapshot = report(accepted: 1);
       final calls = <MethodCall>[];
       final first = Completer<Map<String, Object?>>();
       messenger.setMockMethodCallHandler(c.channel, (call) async {
@@ -162,10 +155,8 @@ void main() {
             : report(stopped: true);
       });
       await show(tester, c);
-      select(tester, 2);
-      await tester.pump();
-      select(tester, 0);
-      await tester.pump();
+      await lower(tester);
+      await lower(tester);
       await tester.tap(find.text('DETENER ENTRENAMIENTO'));
       await tester.pumpAndSettle();
       first.complete(report(pending: 2));
@@ -181,7 +172,7 @@ void main() {
     'native background stop and link loss discard deferred selection',
     (tester) async {
       for (final background in [false, true]) {
-        final c = LatestUiController()..snapshot = report();
+        final c = LatestUiController()..snapshot = report(accepted: 1);
         final calls = <MethodCall>[];
         final first = Completer<Map<String, Object?>>();
         messenger.setMockMethodCallHandler(c.channel, (call) async {
@@ -191,10 +182,8 @@ void main() {
               : report(stopped: true);
         });
         await show(tester, c);
-        select(tester, 2);
-        await tester.pump();
-        select(tester, 0);
-        await tester.pump();
+        await lower(tester);
+        await lower(tester);
         if (background) {
           tester.binding.handleAppLifecycleStateChanged(
             AppLifecycleState.paused,

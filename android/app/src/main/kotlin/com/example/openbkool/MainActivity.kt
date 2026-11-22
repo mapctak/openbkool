@@ -43,8 +43,8 @@ class MainActivity : FlutterActivity() {
                         return@setMethodCallHandler
                     }
                     when (call.method) {
-                        "authorizeControl", "setManualSlope" -> session.manualAction(call.method,
-                            call.argument<String>("sessionId"), call.argument<Boolean>("confirmed") == true,
+                        "activateControl", "setManualSlope" -> session.manualAction(call.method,
+                            call.argument<String>("sessionId"),
                             call.argument<Number>("percent")?.toDouble(), result, call.argument<String>("requestedAtUtc"),
                             call.argument<Boolean>("rapidAdjustment") == true, call.argument<Number>("uiQueueMs")?.toLong())
                         "exportCsv" -> session.exportCsv(call.argument<String>("sessionId"), result)

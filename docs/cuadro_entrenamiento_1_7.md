@@ -1,12 +1,15 @@
 # Cuadro de entrenamiento libre en OpenBkool 1.7
 
-El cuadro reúne el cronómetro, el selector de pendiente, velocidad, potencia, cadencia, distancia y perfil virtual. Las agujas se interpolan durante 260 ms y las cifras reflejan la última lectura válida. Al faltar una lectura, el instrumento muestra un guion y oculta la aguja. El selector ofrece incrementos de 0,5 % y acceso directo a las 41 consignas entre −5 % y +15 %. El control experimental requiere una autorización inicial para la identidad ANT, el fabricante y modelo, el rango y la versión de la política. Se guarda localmente y se puede revocar en Ajustes con el entrenamiento detenido. El menú de la pantalla da acceso a los informes y el botón inferior usa la parada nativa.
+El cuadro reúne el cronómetro, el selector de pendiente, velocidad, potencia, cadencia, distancia y perfil virtual. Las agujas se interpolan durante 260 ms y las cifras reflejan la última lectura válida. Al faltar una lectura, el instrumento muestra un guion y oculta la aguja. Los botones recorren las 41 consignas entre −5 % y +15 % en pasos de 0,5 %. El menú de la pantalla da acceso a los informes y el botón inferior usa la parada nativa.
 
 ## Calentamiento automático
 
-Al abrir Entrenamiento libre, el único servicio de entrenamiento abre el canal dedicado para la identidad exacta del rodillo guardado. Ajustes permite cambiar esa selección. Durante la búsqueda y la identificación, el cuadro muestra el estado y presenta la telemetría que entrega el servicio. El cronómetro usa el tiempo de la sesión nativa desde su creación.
+Al abrir Entrenamiento libre, el único servicio de entrenamiento abre el canal dedicado para la identidad exacta del rodillo guardado. Ajustes permite cambiar esa selección. Durante la búsqueda y la identificación, el cuadro muestra el estado y presenta la telemetría que entrega el servicio. Durante la preparación se muestra el tiempo de calentamiento.
 
-El motor verifica el canal abierto, la identidad coincidente, fabricante 67, modelo 22, señal y telemetría recientes y el estado del servicio. Con autorización guardada, Flutter solicita la activación para el UUID actual. El calentamiento concluye al confirmar el estado activo y habilitado. La activación no envía una consigna. Durante el calentamiento el perfil usa la referencia virtual de 0 %, sin atribuirle una consigna al rodillo. Detener llama al mismo cierre nativo, incluso durante el arranque, y el servicio puede seguir buscando en segundo plano una vez activo.
+El motor verifica el canal abierto, la identidad coincidente, fabricante 67, modelo 22, señal y telemetría recientes y el estado del servicio. Flutter solicita automáticamente la activación para el UUID actual. Al confirmarse el estado activo y habilitado, el cuadro muestra «¡COMIENZA EL ENTRENAMIENTO!» durante dos segundos y el cronómetro de entrenamiento parte de cero. La activación no envía una consigna. Si la sesión termina sin transmitir una pendiente, el cierre tampoco solicita 0 %. Después de una consigna transmitida, se conserva la parada conservadora existente.
+
+El JSON conserva `telemetry.elapsedMs` para el tiempo total, `warmupElapsedMs` para la preparación y `trainingElapsedMs` para el tiempo desde la activación hasta la parada. El CSV conserva su estructura y registra la transición en la fila `manual:enabled`, cuyo `elapsed_ms` indica el tiempo transcurrido desde el inicio de sesión. La distancia y el perfil incluyen los avances válidos del calentamiento, con una referencia virtual de 0 %. El servicio puede seguir buscando en segundo plano una vez activo.
+
 
 ## Perfil de elevación virtual
 

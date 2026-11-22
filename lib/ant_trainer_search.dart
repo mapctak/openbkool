@@ -266,10 +266,12 @@ class AntTrainerSearchController extends ChangeNotifier {
           'operationEvents': <Object?>[],
           'csvError': null,
           'telemetry': null,
+          'warmupElapsedMs': null,
+          'trainingElapsedMs': null,
           'virtualElevation': null,
           'devices': <Object?>[],
           'connectionState': 'waiting_for_identity',
-          'channelMode': 'dedicated_bidirectional_manual_opt_in',
+          'channelMode': 'dedicated_bidirectional_manual',
           'selectedDevice': device,
           'csvFile': null,
         },
@@ -355,11 +357,8 @@ class AntTrainerSearchController extends ChangeNotifier {
     };
   }
 
-  Future<void> authorizeControl(String sessionId) => _performManualAction(
-    'authorizeControl',
-    confirmed: true,
-    expectedSessionId: sessionId,
-  );
+  Future<void> activateControl(String sessionId) =>
+      _performManualAction('activateControl', expectedSessionId: sessionId);
 
   Future<void> requestSlope(
     double percent, {
@@ -373,7 +372,6 @@ class AntTrainerSearchController extends ChangeNotifier {
     String? requestedAtUtc,
     int? uiQueueMs,
     bool rapidAdjustment = false,
-    bool confirmed = false,
     String? expectedSessionId,
   }) async {
     if (controlTransportUncertain || commandBusy || manualStopping) return;
@@ -385,7 +383,6 @@ class AntTrainerSearchController extends ChangeNotifier {
       final report = await channel
           .invokeMapMethod<String, dynamic>(method, {
             'sessionId': expectedSessionId ?? snapshot['sessionId'],
-            'confirmed': confirmed,
             'percent': ?percent,
             'requestedAtUtc': ?requestedAtUtc,
             'uiQueueMs': ?uiQueueMs,

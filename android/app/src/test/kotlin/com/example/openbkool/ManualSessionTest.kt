@@ -14,7 +14,7 @@ class ManualSessionTest {
             if(fail) throw IllegalStateException("simulated IPC error")
             frames.add(hex(b))
         },events::add)
-        fun arm()=c.enable(true)
+        fun arm()=c.enable()
         fun tick(t: Long) { time=t;c.supervise();c.refreshTarget() }
     }
     @Test fun fullOriginalDomainHasExactly41HalfPointEncodingsAndRejectsInvalidValues() {
@@ -35,9 +35,8 @@ class ManualSessionTest {
             try{encodePro1Slope(p);fail("invalid $p")}catch(_:IllegalArgumentException){}
         }
     }
-    @Test fun fullRangeRequiresExplicitAuthorizationForEverySession() {
+    @Test fun fullRangeRequiresVerifiedActivationForEverySession() {
         val s = Sim()
-        assertEquals("explicit_full_range_authorization_required", s.c.enable(false)["reason"])
         for (value in -10..30) assertEquals("rejected", s.c.request(value / 2.0)["event"])
         assertTrue(s.frames.isEmpty())
         assertEquals("enabled", s.arm()["event"])

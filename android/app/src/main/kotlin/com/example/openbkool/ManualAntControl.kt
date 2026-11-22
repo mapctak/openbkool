@@ -123,7 +123,7 @@ internal class ManualAntControl(
         val next = when {
             stopped && stopReason == "telemetry_not_fresh" && !closeComplete && !faulted -> "suspended"
             (stopped || stopIntent.get() != null) && !closeComplete -> "stopping"
-            faulted || closeFailed || (stopped && everEnabled && stopResult != null && stopResult != "zero_api_returned_unconfirmed") || (stopped && (stopReason?.startsWith("link_lost") == true || stopReason == "disconnected")) -> "error"
+            faulted || closeFailed || (stopped && lastManualApiSuccess != null && stopResult != null && stopResult != "zero_api_returned_unconfirmed") || (stopped && (stopReason?.startsWith("link_lost") == true || stopReason == "disconnected")) -> "error"
             stopped -> "stopped"
             enabled && failure != null -> "error"
             enabled -> "active"
@@ -142,9 +142,8 @@ internal class ManualAntControl(
         closeComplete = true; closeFailed = !clean
         supervise()
     }
-    fun enable(explicit: Boolean): Map<String, Any?> {
+    fun enable(): Map<String, Any?> {
         val reason = when {
-            !explicit -> "explicit_full_range_authorization_required"
             stopped || faulted || targetsInvalidated -> "session_requires_reconnect"
             enabled -> "already_enabled"
             else -> link().reason(target)
@@ -182,7 +181,7 @@ internal class ManualAntControl(
         }
         val reason = when {
             stopped || faulted || stopIntent.get() != null -> "session_requires_reconnect"
-            !enabled -> "explicit_activation_required"
+            !enabled -> "activation_required"
             else -> abortReason()
         }
         if (reason != null) return event("rejected", requestFields + mapOf("reason" to reason, "apiCalled" to false))
@@ -338,6 +337,7 @@ internal class ManualAntControl(
         val skip = when {
             !everEnabled -> "never_enabled"
             faulted -> "api_fault_no_retry"
+            lastManualApiSuccess == null -> "no_manual_command_sent"
             !allowZero -> "link_or_channel_unavailable"
             else -> link().stopReason(target)
         }

@@ -17,7 +17,7 @@ class BroadcastBufferFaultTest {
         val radio = Radio(replace)
         val c=ManualAntControl(AntTrainerIdentity(30064,112,5),{now},
             {ManualControlLink(true,true,67,22,0,true)}, {bytes,_->radio.set(bytes)}, {})
-        init{c.enable(true)}
+        init{c.enable()}
     }
     @Test fun acceptedIncreaseMayNeverBeAiredWhenFuturePayloadReplacesIt() {
         val r=Rig(true);r.c.request(1.0);r.now=1000;r.c.request(0.0)

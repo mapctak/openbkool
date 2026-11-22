@@ -3,9 +3,10 @@
 **ENTRENAMIENTO LIBRE** comienza con un calentamiento y conecta por ANT
 propietario con la identidad guardada del Bkool Smart Pro v1. El cuadro muestra
 tiempo, velocidad, potencia, cadencia, distancia y un perfil de elevación virtual.
-Al completarse la identificación, el motor activa las 41 pendientes de −5 % a
-+15 % si el usuario ya autorizó ese rodillo. El permiso se puede revocar en Ajustes. Las pendientes negativas y superiores
-a +8 % siguen pendientes de validación física completa.
+Cuando Android verifica la conexión y confirma el control activo, empieza el
+cronómetro de entrenamiento y se habilitan las 41 pendientes de −5 % a +15 %
+mediante pasos de 0,5 %. Las pendientes negativas y superiores a +8 % siguen
+pendientes de validación física completa.
 [Cuadro de entrenamiento y perfil virtual](docs/cuadro_entrenamiento_1_7.md).
 
 En Android, el servicio de entrenamiento mantiene ANT y ofrece **DETENER** en la

@@ -130,8 +130,7 @@ void main() {
         'mode': 'training_connected',
         'device': const SavedTrainer(123, 112, 6).device,
       });
-      expect(find.text('ANT · CALENTAMIENTO'), findsOneWidget);
-      expect(find.textContaining('Buscando rodillo'), findsOneWidget);
+      expect(find.text('CALENTAMIENTO'), findsOneWidget);
       training.emit({
         'running': true,
         'status': 'running',
@@ -141,7 +140,7 @@ void main() {
         'telemetry': {'signal': 'receiving'},
       });
       await tester.pumpAndSettle();
-      expect(find.text('ANT · CALENTAMIENTO'), findsOneWidget);
+      expect(find.text('CALENTAMIENTO'), findsOneWidget);
       training.emit({
         'running': false,
         'status': 'start_error',
@@ -159,11 +158,10 @@ void main() {
       await tester.pumpAndSettle();
       expect(training.starts, hasLength(2));
       expect(training.starts.last, training.starts.first);
-      expect(find.textContaining('Buscando rodillo'), findsOneWidget);
       await tester.tap(find.text('DETENER ENTRENAMIENTO'));
       await tester.pumpAndSettle();
       expect(training.stops, 1);
-      expect(find.textContaining('CALENTAMIENTO'), findsNothing);
+      expect(find.text('CALENTAMIENTO'), findsNothing);
       await tester.pumpWidget(const SizedBox());
       session.dispose();
     },

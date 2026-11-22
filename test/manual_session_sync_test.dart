@@ -88,8 +88,8 @@ void main() {
               ? 'event,session_id\nfinished:user_finish,sync\n'
               : report();
         }
-        if (call.method == 'authorizeControl') {
-          expect((call.arguments as Map)['confirmed'], true);
+        if (call.method == 'activateControl') {
+          expect((call.arguments as Map)['sessionId'], 'sync');
           enabled = true;
           history.add({'event': 'enabled'});
         } else if (call.method == 'setManualSlope') {
@@ -125,7 +125,7 @@ void main() {
         },
       );
       await tester.runAsync(() => start);
-      await c.authorizeControl('sync');
+      await c.activateControl('sync');
       final session = TrainerSession(training: c);
       await tester.pumpWidget(
         MaterialApp(home: TrainingPage(session: session)),
