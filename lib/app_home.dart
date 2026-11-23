@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'ant_trainer_search.dart';
 import 'trainer_session.dart';
 import 'training.dart';
+import 'spinning.dart';
+import 'workout_dashboard.dart';
 
 const emerald = Color(0xFF008F70);
 typedef AdvancedBuilder = Widget Function(
@@ -31,6 +33,8 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
   late final session = widget.session ?? TrainerSession();
   bool advanced = false, visited = false;
   bool initialized = false;
+  bool trainingRouteOpen = false;
+  bool catalogOpen = false;
   Timer? connectionRetry;
 
   @override
@@ -53,10 +57,6 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
     }
     if (!mounted) return;
     initialized = true;
-    if (session.training.running && ModalRoute.of(context)?.isCurrent == true) {
-      if (widget.session == null) unawaited(openTraining());
-      return;
-    }
     connectFromHome();
   }
 
@@ -95,6 +95,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
     if (status?.startsWith('link_lost:') != true &&
         !const {
           'user_finish',
+          'program_completed',
           'check_timeout',
           'radio_search_timeout',
           'disconnected',
@@ -115,11 +116,17 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      if (connectionRetry == null) connectFromHome();
+      unawaited(refreshFromService());
     } else {
       connectionRetry?.cancel();
       connectionRetry = null;
     }
+  }
+
+  Future<void> refreshFromService() async {
+    if (!initialized) return;
+    await session.training.refreshTraining();
+    if (connectionRetry == null) connectFromHome();
   }
 
   @override
@@ -147,11 +154,122 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
     connectFromHome();
   }
 
-  Future<void> openTraining() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(builder: (_) => TrainingPage(session: session)),
+  Future<void> openTraining({String? programId, String? resumeId}) async {
+    if (trainingRouteOpen ||
+        (resumeId != null &&
+            (!session.training.running ||
+                session.training.snapshot['sessionId'] != resumeId)) ||
+        (programId != null && session.locked)) {
+      return;
+    }
+    trainingRouteOpen = true;
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          builder: (_) => TrainingPage(
+            session: session,
+            programId: programId,
+            resumeOnly: resumeId != null,
+          ),
+        ),
+      );
+    } finally {
+      trainingRouteOpen = false;
+      scheduleConnectionRetry();
+    }
+  }
+
+  Future<void> openSpinning() async {
+    if (catalogOpen || session.locked) return;
+    catalogOpen = true;
+    try {
+      final catalog = session.training.spinningCatalog();
+      final id = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => SpinningSelector(catalog: catalog)),
+      );
+      if (mounted && id != null && !session.locked) {
+        await openTraining(programId: id);
+      }
+    } finally {
+      catalogOpen = false;
+    }
+  }
+
+  Future<void> exportLastWorkout(String id, bool csv) async {
+    try {
+      final json = csv
+          ? null
+          : await session.training.exportJson(id, finalized: true);
+      final text = csv
+          ? await session.training.exportCsv(id)
+          : json == null
+          ? null
+          : const JsonEncoder.withIndent('  ').convert(json);
+      if (text == null) throw StateError('Informe no disponible');
+      await Clipboard.setData(ClipboardData(text: text));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Informe copiado')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se pudo copiar el informe')),
+        );
+      }
+    }
+  }
+
+  Widget workoutCard() {
+    final report = session.training.snapshot;
+    final program = report['spinning'] as Map?;
+    final spinning = report['workoutMode'] == 'spinning';
+    final grade = spinning
+        ? (program?['currentGrade'])
+        : (report['manualControl'] as Map?)?['lastRequestedPercent'];
+    final stopping =
+        session.training.manualStopping ||
+        report['status'] == 'stopping_zero_unconfirmed';
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'ENTRENAMIENTO EN CURSO',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            Text(spinning ? 'Spinning' : 'Libre'),
+            if (program != null) Text(program['name'] as String),
+            Text(
+              '${workoutTime(report['trainingElapsedMs'] as num? ?? 0)} · Pendiente ${slopeLabel(grade as num?)}',
+            ),
+            Wrap(
+              spacing: 8,
+              children: [
+                TextButton(
+                  onPressed: stopping || report['sessionId'] is! String
+                      ? null
+                      : () => openTraining(
+                          resumeId: report['sessionId'] as String,
+                        ),
+                  child: const Text('VOLVER AL ENTRENAMIENTO'),
+                ),
+                TextButton(
+                  onPressed: stopping || report['sessionId'] == null
+                      ? null
+                      : () => session.stopWorkout(
+                          expectedId: report['sessionId'] as String,
+                        ),
+                  child: Text(stopping ? 'DETENIENDO…' : 'DETENER'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
-    scheduleConnectionRetry();
   }
 
   Future<void> chooseTrainer() async {
@@ -246,19 +364,62 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
                   if (session.preferenceError != null)
                     const Text('No se pudo leer el rodillo guardado.'),
                   const SizedBox(height: 10),
-                  Card(
-                    child: ListTile(
-                      leading: const Icon(Icons.bolt, color: emerald),
-                      title: const Text(
-                        'ENTRENAMIENTO LIBRE',
-                        style: TextStyle(fontWeight: FontWeight.bold),
+                  if (session.training.running &&
+                      session.training.snapshot['trainingServiceActive'] !=
+                          false)
+                    workoutCard()
+                  else ...[
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.bolt, color: emerald),
+                        title: const Text(
+                          'ENTRENAMIENTO LIBRE',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: session.loading || session.locked
+                            ? null
+                            : openTraining,
                       ),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: session.loading || session.training.commandBusy
-                          ? null
-                          : openTraining,
                     ),
-                  ),
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(
+                          Icons.directions_bike,
+                          color: emerald,
+                        ),
+                        title: const Text(
+                          'SPINNING',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: session.loading || session.locked
+                            ? null
+                            : openSpinning,
+                      ),
+                    ),
+                    if (session.lastWorkout case final workout?)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(workout.outcome ?? 'Último entrenamiento'),
+                        trailing: PopupMenuButton<bool>(
+                          tooltip: 'Exportar último entrenamiento',
+                          onSelected: (csv) =>
+                              unawaited(exportLastWorkout(workout.id, csv)),
+                          itemBuilder: (_) => [
+                            if (workout.hasCsv)
+                              const PopupMenuItem(
+                                value: true,
+                                child: Text('Copiar CSV'),
+                              ),
+                            const PopupMenuItem(
+                              value: false,
+                              child: Text('Copiar JSON'),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
                 ],
               ),
             ),

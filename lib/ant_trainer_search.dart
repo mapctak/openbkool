@@ -227,6 +227,24 @@ class AntTrainerSearchController extends ChangeNotifier {
     }
   }
 
+  Future<void> refreshTraining() async {
+    if (commandBusy) return;
+    final before = snapshot;
+    try {
+      final report = await channel.invokeMapMethod<String, dynamic>('snapshot');
+      if (!_disposed && identical(before, snapshot) && report != null) {
+        _update(report);
+      }
+    } on PlatformException {
+      // The event stream can still provide the next live report.
+    } on MissingPluginException {
+      // Native training is available on Android.
+    }
+  }
+
+  Future<List<Map<Object?, Object?>>> spinningCatalog() async => (await channel
+      .invokeListMethod<Map<Object?, Object?>>('spinningCatalog'))!;
+
   Future<void> start(String mode, {Map<String, Object?>? device}) async {
     if (running || commandBusy) return;
     var generation = _manualGeneration;
@@ -254,6 +272,8 @@ class AntTrainerSearchController extends ChangeNotifier {
         ...snapshot,
         if (training) ...{
           'sessionId': null,
+          'workoutMode': mode.startsWith('spinning:') ? 'spinning' : null,
+          'spinning': null,
           if (!reusingPresentLink) 'reportSequence': null,
           'identificationTiming': null,
           'transmissionDiagnostics': null,

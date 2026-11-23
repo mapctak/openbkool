@@ -10,7 +10,7 @@ import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
     private var trainingEvents: EventChannel.StreamHandler? = null
-    private data class RequestedTraining(val device: Map<String, Any?>?, val reply: MethodChannel.Result, val checkOnly: Boolean)
+    private data class RequestedTraining(val device: Map<String, Any?>?, val reply: MethodChannel.Result, val checkOnly: Boolean, val program: SpinningProgram?)
     private var trainingPermissionRequest: RequestedTraining? = null
     private var antTrainerSearch: AntTrainerSearch? = null
     private var antDiagnostics: AntDiagnostics? = null
@@ -30,12 +30,20 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "openbkool/training").setMethodCallHandler { call, result ->
             val session = TrainingService.controller()
             when (call.method) {
-                "start" -> startTraining(call.argument<Map<String, Any?>>("device"), result,
-                    checkOnly = call.argument<String>("mode") == "training_connection_check")
+                "spinningCatalog" -> result.success(SpinningCatalog.programs.map { it.report() })
+                "start" -> {
+                    val mode = call.argument<String>("mode")
+                    val program = if (mode?.startsWith("spinning:") == true)
+                        SpinningCatalog.programs.firstOrNull { it.id == mode.substringAfter(':') } else null
+                    if (mode?.startsWith("spinning:") == true && program == null)
+                        result.error("invalid_program", "Programa de Spinning desconocido", null)
+                    else startTraining(call.argument<Map<String, Any?>>("device"), result,
+                        checkOnly = mode == "training_connection_check", program = program)
+                }
                 "stop" -> {
                     val reason = call.argument<String>("reason")
                     val connectionOnly = reason == "cancel_check" || reason == "disconnect_trainer"
-                    if (trainingPermissionRequest?.checkOnly == connectionOnly) {
+                    if (call.argument<String>("expectedId") == null && trainingPermissionRequest?.checkOnly == connectionOnly) {
                         trainingPermissionRequest?.reply?.error("training_start_cancelled", "Entrenamiento sin iniciar", null)
                         trainingPermissionRequest = null
                     }
@@ -146,7 +154,7 @@ class MainActivity : FlutterActivity() {
         super.onStop()
     }
 
-    private fun startTraining(device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean) {
+    private fun startTraining(device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean, program: SpinningProgram?) {
         if (!visible) { result.error("training_not_visible", "Abre OpenBkool para iniciar el entrenamiento", null); return }
         if (trainingPermissionRequest != null) {
             result.error("permission_request_pending", "Ya hay una solicitud de permisos", null)
@@ -157,9 +165,9 @@ class MainActivity : FlutterActivity() {
             if (Build.VERSION.SDK_INT >= 33 && !status.notificationsGranted) add(Manifest.permission.POST_NOTIFICATIONS)
         }
         if (missing.isEmpty()) {
-            TrainingService.start(this, device, result, checkOnly)
+            TrainingService.start(this, device, result, checkOnly, program)
         } else {
-            trainingPermissionRequest = RequestedTraining(device, result, checkOnly)
+            trainingPermissionRequest = RequestedTraining(device, result, checkOnly, program)
             try {
                 requestPermissions(missing.toTypedArray(), permissionRequestCode + 1)
             } catch (error: RuntimeException) {
@@ -187,7 +195,7 @@ class MainActivity : FlutterActivity() {
         if (requestCode == permissionRequestCode + 1) {
             val request = trainingPermissionRequest ?: return
             trainingPermissionRequest = null
-            if (visible) TrainingService.start(this, request.device, request.reply, request.checkOnly)
+            if (visible) TrainingService.start(this, request.device, request.reply, request.checkOnly, request.program)
             else request.reply.error("training_not_visible", "Abre OpenBkool para iniciar el entrenamiento", null)
             return
         }

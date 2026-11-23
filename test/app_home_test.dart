@@ -15,6 +15,9 @@ class FakeTraining extends AntTrainerSearchController {
   int stops = 0;
   Map<String, Object?>? workoutStopReport;
   @override
+  Future<void> refreshTraining() async {}
+
+  @override
   Future<void> start(String mode, {Map<String, Object?>? device}) async {
     starts.add({'mode': mode, 'device': device});
     emit({
@@ -73,6 +76,16 @@ void main() {
       final calls = <MethodCall>[];
       messenger.setMockMethodCallHandler(commands, (call) async {
         calls.add(call);
+        if (call.method == 'snapshot') {
+          return {
+            'sessionId': 'owned-by-service',
+            'running': false,
+            'status': 'user_finish',
+            'recordState': 'final',
+            'finishReason': 'user_finish',
+            'resourcesReleased': false,
+          };
+        }
         return null;
       });
       messenger.setMockMethodCallHandler(events, (call) async {
@@ -107,13 +120,23 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      expect(find.text('ENTRENAMIENTO EN CURSO'), findsOneWidget);
+      await tester.tap(find.text('VOLVER AL ENTRENAMIENTO'));
+      await tester.pumpAndSettle();
       expect(find.text('TIEMPO DE ENTRENAMIENTO'), findsOneWidget);
       expect(find.text('Autorizar rango completo'), findsNothing);
       expect(find.text('DETENER ENTRENAMIENTO'), findsOneWidget);
       expect(calls, isEmpty);
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(find.text('ENTRENAMIENTO EN CURSO'), findsNothing);
+      expect(find.text('Último entrenamiento'), findsOneWidget);
+      expect(calls.map((call) => call.method), ['snapshot']);
       await tester.pumpWidget(const SizedBox());
       await tester.pumpAndSettle();
-      expect(calls, isEmpty);
     },
     variant: TargetPlatformVariant.only(TargetPlatform.android),
   );
@@ -370,7 +393,7 @@ void main() {
     training.snapshot = running;
     await tester.pumpWidget(OpenBkoolApp(session: session));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+    await tester.tap(find.text('VOLVER AL ENTRENAMIENTO'));
     await tester.pumpAndSettle();
     await tester.pageBack();
     await tester.pumpAndSettle();
@@ -550,12 +573,12 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('ENTRENAMIENTO LIBRE'),
+        find.text('VOLVER AL ENTRENAMIENTO'),
         200,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+      await tester.tap(find.text('VOLVER AL ENTRENAMIENTO'));
       await tester.pumpAndSettle();
       expect(find.text('ENTRENAMIENTO LIBRE'), findsOneWidget);
       final list = find.byType(Scrollable).first;
@@ -600,12 +623,12 @@ void main() {
     await tester.pumpWidget(OpenBkoolApp(session: session));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
-      find.text('ENTRENAMIENTO LIBRE'),
+      find.text('VOLVER AL ENTRENAMIENTO'),
       200,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+    await tester.tap(find.text('VOLVER AL ENTRENAMIENTO'));
     await tester.pumpAndSettle();
     expect(training.stops, 0);
     await tester.pageBack();
@@ -614,7 +637,7 @@ void main() {
     expect(training.stops, 0);
     expect(training.starts, isEmpty);
     expect(training.running, true);
-    await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+    await tester.tap(find.text('VOLVER AL ENTRENAMIENTO'));
     await tester.pumpAndSettle();
     expect(find.text('CALENTAMIENTO'), findsNothing);
     expect(find.text('00:00:42'), findsOneWidget);

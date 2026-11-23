@@ -72,7 +72,7 @@ class TrainingService : Service() {
         startedAtMs = SystemClock.elapsedRealtime()
         current = this
         try {
-            val notice = notification(requestedToken, request?.checkOnly == true, false)
+            val notice = notification(requestedToken, request?.checkOnly == true, false, request?.program != null)
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIFICATION_ID, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             } else {
@@ -122,22 +122,22 @@ class TrainingService : Service() {
         val controller = AntTrainerSearch(applicationContext, training = true, trainingOwner = this)
         ant = controller
         clearPending()
-        startOnController(controller, request.device, request.result, request.checkOnly, prerequisites)
+        startOnController(controller, request.device, request.result, request.checkOnly, prerequisites, request.program)
         if (!controller.hasActiveSession()) stopSelf()
     }
 
     private fun startOnController(controller: AntTrainerSearch, device: Map<String, Any?>?,
-        result: MethodChannel.Result, checkOnly: Boolean, prerequisites: TrainingPermissions) {
+        result: MethodChannel.Result, checkOnly: Boolean, prerequisites: TrainingPermissions, program: SpinningProgram?) {
         controller.start(if (checkOnly) "training_connection_check" else "training_connected", result, device, listOf(
             lifecycle("service_started") + mapOf("monotonicMs" to startedAtMs),
             lifecycle("foreground_promoted") + mapOf("promotionRequestedAtMs" to promotionRequestedAtMs),
             lifecycle("notification_active") + prerequisites.toMap(),
             lifecycle(if (activityResumed) "activity_resumed" else "activity_stopped") +
                 mapOf("decision" to "continue_connection"),
-        ), screenOff = !getSystemService(PowerManager::class.java).isInteractive)
+        ), screenOff = !getSystemService(PowerManager::class.java).isInteractive, program = program)
     }
 
-    private fun reuse(device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean) {
+    private fun reuse(device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean, program: SpinningProgram?) {
         val controller = ant
         if (controller == null || !ready) {
             result.error("ant_busy", "La conexión ANT se está iniciando", null)
@@ -165,12 +165,12 @@ class TrainingService : Service() {
             override fun error(code: String, message: String?, details: Any?) = deliver { result.error(code, message, details) }
             override fun notImplemented() = deliver { result.notImplemented() }
         }
-        controller.reuse(device, checkOnly, reply, { request.cancelled }) { released ->
+        controller.reuse(device, checkOnly, program, reply, { request.cancelled }) { released ->
             when {
                 request.cancelled -> reply.error("training_start_cancelled", "Entrenamiento sin iniciar", null)
                 !released -> reply.error("cleanup_failed", "No se pudo liberar el canal ANT", null)
                 failure() != null -> reply.error("training_service_destroyed", "Servicio ANT finalizado", null)
-                else -> startOnController(controller, device, reply, checkOnly, permissionStatus(this))
+                else -> startOnController(controller, device, reply, checkOnly, permissionStatus(this), program)
             }
             if (!controller.hasActiveSession()) finished()
         }
@@ -235,7 +235,7 @@ class TrainingService : Service() {
             notifiedState = signature
             stopAction?.cancel()
             try {
-                val notice = notification(id, connectionOnly, connected)
+                val notice = notification(id, connectionOnly, connected, report["workoutMode"] == "spinning")
                 if (Build.VERSION.SDK_INT >= 29) {
                     startForeground(NOTIFICATION_ID, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
                 } else {
@@ -280,7 +280,7 @@ class TrainingService : Service() {
         }
     }
 
-    private fun notification(token: String, checkOnly: Boolean, connected: Boolean): Notification {
+    private fun notification(token: String, checkOnly: Boolean, connected: Boolean, spinning: Boolean): Notification {
         val open = PendingIntent.getActivity(this, 0,
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -295,6 +295,7 @@ class TrainingService : Service() {
             .setContentTitle(when {
                 connected -> "OpenBkool — Rodillo conectado"
                 checkOnly -> "OpenBkool — Comprobando conexión"
+                spinning -> "OpenBkool — Spinning"
                 else -> "OpenBkool — Entrenamiento libre"
             })
             .setContentText(if (checkOnly) "Conexión ANT" else "Sesión ANT")
@@ -355,7 +356,7 @@ class TrainingService : Service() {
         private const val STOP = "com.example.openbkool.STOP_TRAINING"
         private val main = Handler(Looper.getMainLooper())
 
-        private data class StartRequest(val token: String, val device: Map<String, Any?>?, val result: MethodChannel.Result, val checkOnly: Boolean)
+        private data class StartRequest(val token: String, val device: Map<String, Any?>?, val result: MethodChannel.Result, val checkOnly: Boolean, val program: SpinningProgram?)
         private var pending: StartRequest? = null
         private val startTimeout = Runnable { cancelStart("training_service_timeout") }
         private var current: TrainingService? = null
@@ -400,8 +401,8 @@ class TrainingService : Service() {
             }
         }
 
-        internal fun start(context: Context, device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean) {
-            current?.let { it.reuse(device, result, checkOnly); return }
+        internal fun start(context: Context, device: Map<String, Any?>?, result: MethodChannel.Result, checkOnly: Boolean, program: SpinningProgram?) {
+            current?.let { it.reuse(device, result, checkOnly, program); return }
             if (!TrainingServicePolicy.canStart(pending != null, current != null, lastController?.hasActiveSession() == true)) {
                 result.error("ant_busy", "Ya hay un entrenamiento en curso o cerrándose", null)
                 return
@@ -415,7 +416,7 @@ class TrainingService : Service() {
                 result.error("training_service_blocked", blocker, null)
                 return
             }
-            val request = StartRequest(java.util.UUID.randomUUID().toString(), device, result, checkOnly)
+            val request = StartRequest(java.util.UUID.randomUUID().toString(), device, result, checkOnly, program)
             pending = request
             try {
                 val intent = serviceIntent(context, START, request.token)

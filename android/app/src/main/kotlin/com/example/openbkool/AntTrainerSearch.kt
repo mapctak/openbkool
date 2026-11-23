@@ -81,8 +81,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         session.submit { session.screenChanged(off) }
     }
 
-    fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null,
-        lifecycle: List<Map<String, Any?>> = emptyList(), screenOff: Boolean = false) {
+    internal fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null,
+        lifecycle: List<Map<String, Any?>> = emptyList(), screenOff: Boolean = false, program: SpinningProgram? = null) {
         if (mode !in (if (training) listOf("training_connected", "training_connection_check") else listOf("sequential", "fec", "bkool_v1"))) {
             result.error("invalid_mode", "Protocolo no implementado", null); return
         }
@@ -91,7 +91,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             result.error("invalid_target", "Selecciona explícitamente un rodillo antes de conectar", null); return
         }
         val target = parseTarget(selected, result) ?: return
-        val session = Session(mode, target)
+        val session = Session(mode, target, program)
         if (!AntRadioCoordinator.acquire(session)) {
             session.worker.shutdown()
             result.error("ant_busy", "Otra operación ANT está usando la radio", null); return
@@ -115,7 +115,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         } catch (error: Exception) { result.error("invalid_target", error.message, null); null }
     }
 
-    internal fun reuse(selected: Map<*, *>?, checkOnly: Boolean, result: MethodChannel.Result,
+    internal fun reuse(selected: Map<*, *>?, checkOnly: Boolean, program: SpinningProgram?, result: MethodChannel.Result,
         isStartCancelled: () -> Boolean, restart: (Boolean) -> Unit) {
         if (selected == null) {
             result.error("invalid_target", "Selecciona un rodillo", null); return
@@ -126,7 +126,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             restart(true); return
         }
         try {
-            connection.worker.execute { connection.reuse(target, checkOnly, result, isStartCancelled, restart) }
+            connection.worker.execute { connection.reuse(target, checkOnly, program, result, isStartCancelled, restart) }
         } catch (_: RejectedExecutionException) {
             restart(true)
         }
@@ -209,7 +209,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
     }
     fun dispose() { stop(reason = "engine_disposed"); sink = null }
 
-    private inner class Session(val mode: String, val target: AntTrainerIdentity) : ServiceConnection {
+    private inner class Session(val mode: String, val target: AntTrainerIdentity, program: SpinningProgram?) : ServiceConnection {
         val worker = AntSerialWorker()
         @Volatile var commandFence = ManualCommandFence()
         private val captureAnchorMs = android.os.SystemClock.elapsedRealtime()
@@ -305,6 +305,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         private var lastManualAvailability: String? = null
         private var sessionStartedMs = android.os.SystemClock.elapsedRealtime()
         private var warmupElapsedMs: Long? = null
+        private var spinning = program?.let(::SpinningProgress)
+        private var finishReason: String? = null
+        private fun effectiveElapsed(now: Long) = warmupElapsedMs?.let {
+            ((trainingEndedMs ?: now) - sessionStartedMs - it).coerceAtLeast(0)
+        }
         private var trainingEndedMs: Long? = null
         private val linkTelemetry = if (training) BkoolTelemetry(sessionStartedMs, target) else null
         private var telemetry = if (training && !checkOnly) BkoolTelemetry(sessionStartedMs, target) else null
@@ -321,6 +326,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 if (handleControlAbort()) return@submit
             }
             val now = android.os.SystemClock.elapsedRealtime()
+            if (!checkOnly && !advanceSpinning(now)) return@submit
             val superviseLink = now >= nextSupervisionAt
             if (superviseLink) {
                 nextSupervisionAt = now + 1000
@@ -350,11 +356,31 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             scheduleTrainingTick()
         } }
 
+        private fun advanceSpinning(now: Long): Boolean {
+            val progress = spinning ?: return true
+            if (cancelled) return false
+            if (warmupElapsedMs == null && manualLink().reason(target) == null) manual.enable()
+            val elapsed = effectiveElapsed(now) ?: return true
+            if (elapsed >= progress.program.durationMs) {
+                finish("program_completed")
+                return false
+            }
+            val grade = progress.advance(elapsed) ?: return true
+            record("slope_selection", null, mapOf("selectedPercent" to grade, "source" to "spinning",
+                "programId" to progress.program.id, "intervalIndex" to progress.index))
+            manual.request(grade)
+            return true
+        }
+
         private fun scheduleTrainingTick() {
             main.removeCallbacks(trainingTick)
             if (finished || cancelled || !opened) return
             val supervisionDelay = (nextSupervisionAt - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0)
-            val delay = minOf(supervisionDelay, manual.nextManualDelayMs() ?: supervisionDelay)
+            val programDelay = spinning.takeUnless { checkOnly }?.nextBoundary()?.let { boundary ->
+                effectiveElapsed(android.os.SystemClock.elapsedRealtime())?.let { (boundary - it).coerceAtLeast(0) }
+            }
+            val delay = minOf(supervisionDelay, manual.nextManualDelayMs() ?: supervisionDelay,
+                programDelay ?: supervisionDelay)
             main.postDelayed(trainingTick, delay)
             if (finished || cancelled) main.removeCallbacks(trainingTick)
         }
@@ -362,7 +388,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         // single zero and drain are reused, while RX supervision stays alive.
         private fun handleControlAbort(result: MethodChannel.Result? = null): Boolean {
             val failure = manual.abortReason() ?: return false
-            if (failure != "link_lost:telemetry_not_fresh") {
+            if (spinning != null || failure != "link_lost:telemetry_not_fresh") {
                 end(failure, result)
                 return true
             }
@@ -457,6 +483,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 result.error("session_stopping", "La sesión está cerrándose", null); return
             }
             trainingOwner?.failure()?.let { stopForServiceFailure(it, result); return }
+            if (spinning != null) {
+                result.error("automatic_training", "Spinning gestiona las consignas de pendiente", null)
+                return
+            }
             when (method) {
                 "activateControl" -> manual.enable()
                 "setManualSlope" -> {
@@ -506,7 +536,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             finished = finished,
         )
 
-        fun reuse(requested: AntTrainerIdentity, readOnly: Boolean, result: MethodChannel.Result,
+        fun reuse(requested: AntTrainerIdentity, readOnly: Boolean, program: SpinningProgram?, result: MethodChannel.Result,
             isStartCancelled: () -> Boolean, restart: (Boolean) -> Unit) {
             val replace = TrainingServicePolicy.replaceConnection(
                 sameTarget = requested == target,
@@ -544,6 +574,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 virtualElevation = VirtualElevation()
                 csvFile = null; csvError = null
                 warmupElapsedMs = null; trainingEndedMs = null
+                spinning = program?.let(::SpinningProgress)
+                finishReason = null
                 manualEvents.clear(); droppedManualEvents = 0
                 frames.clear(); droppedFrames = 0
                 events.clear(); droppedEvents = 0
@@ -638,7 +670,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 "connectionState" to if (finished) "closed" else if (checked == "check_verified") "identity_verified" else "waiting_for_identity",
                 "antConnectionState" to if (presence == "disconnected" && status !in setOf(
                         "user_finish", "screen_closed", "cancel_check", "disconnect_trainer",
-                        "connection_idle_timeout", "connection_replaced", "task_removed",
+                        "connection_idle_timeout", "connection_replaced", "task_removed", "program_completed",
                     )) "error" else presence,
                 "antCompatibility" to checked,
                 "connectionId" to connectionId.takeIf { training },
@@ -649,7 +681,10 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 "telemetry" to (archived?.get("telemetry") ?: (telemetry ?: linkTelemetry)?.snapshot(
                     if (stopping || finished || workoutFinal) trainingEndedMs ?: reportMs else reportMs)),
                 "warmupElapsedMs" to if (training && (!checkOnly || workoutFinal)) warmupElapsedMs ?: ((trainingEndedMs ?: reportMs) - sessionStartedMs) else null,
-                "trainingElapsedMs" to warmupElapsedMs?.let { (trainingEndedMs ?: reportMs) - sessionStartedMs - it },
+                "trainingElapsedMs" to effectiveElapsed(reportMs),
+                "workoutMode" to if (!training || (checkOnly && !workoutFinal)) null else if (spinning != null) "spinning" else "free",
+                "finishReason" to finishReason,
+                "spinning" to spinning?.report(effectiveElapsed(reportMs) ?: 0, finishReason),
                 "csvFile" to csvFile, "csvError" to csvError,
                 "status" to status, "running" to (!finished && !workoutFinal && (!training || !checkOnly)), "stage" to stage,
                 "mode" to (if (!training) mode else if (checkOnly && !workoutFinal) "training_connection_check" else "training_connected"), "startedAt" to startedAt, "updatedAt" to now(),
@@ -1050,6 +1085,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         fun finish(reason: String) {
             if (finished || stopping) return
             stopping = true; cancelled = true
+            if (!checkOnly) finishReason = reason
             invalidateTargets(reason)
             if (training && !checkOnly) trainingEndedMs = trainingEndedMs ?: android.os.SystemClock.elapsedRealtime()
             val zeroQueued = manual.stop(reason, allowZero = !radioDead && opened && reason != "disconnected")

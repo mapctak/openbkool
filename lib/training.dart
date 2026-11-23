@@ -16,9 +16,16 @@ String slopeLabel(num? value) => value == null
     : '${value > 0 ? '+' : ''}${value.toStringAsFixed(1).replaceAll('.', ',')} %';
 
 class TrainingPage extends StatefulWidget {
-  const TrainingPage({super.key, required this.session});
+  const TrainingPage({
+    super.key,
+    required this.session,
+    this.programId,
+    this.resumeOnly = false,
+  });
 
   final TrainerSession session;
+  final String? programId;
+  final bool resumeOnly;
 
   @override
   State<TrainingPage> createState() => _TrainingPageState();
@@ -59,7 +66,7 @@ class _TrainingPageState extends State<TrainingPage>
     }
     session.addListener(scheduleWarmup);
     scheduleWarmup();
-    pendingEntry = !session.training.running;
+    pendingEntry = !widget.resumeOnly && !session.training.running;
     if (pendingEntry) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || cancelled) return;
@@ -126,7 +133,8 @@ class _TrainingPageState extends State<TrainingPage>
       startBanner = Timer(const Duration(seconds: 5), () {
         setState(() => showStart = false);
       });
-    } else if (!c.commandBusy &&
+    } else if (report['workoutMode'] != 'spinning' &&
+        !c.commandBusy &&
         activationAttempt != id &&
         (report['manualControl'] as Map)['everEnabled'] != true) {
       setState(() => activationAttempt = id);
@@ -149,7 +157,7 @@ class _TrainingPageState extends State<TrainingPage>
       showStart = false;
     });
     try {
-      await session.connect();
+      await session.connect(programId: widget.programId);
     } finally {
       if (mounted) setState(() => starting = false);
     }
@@ -160,9 +168,9 @@ class _TrainingPageState extends State<TrainingPage>
       cancelled = true;
       showStart = false;
     });
-    final controller = widget.session.training;
-    await controller.stop(
-      expectedId: controller.snapshot['connectionActionId'] as String?,
+    await widget.session.stopWorkout(
+      expectedId: sessionId,
+      allowPendingStart: true,
     );
   }
 
@@ -283,14 +291,19 @@ class _TrainingPageState extends State<TrainingPage>
           !c.manualStopping &&
           (pendingEntry || starting || c.running) &&
           error == null;
-      final usable = active && c.acceptingManualChanges;
+      final spinning =
+          report['workoutMode'] == 'spinning' || widget.programId != null;
+      final program = report['spinning'] as Map?;
+      final usable = !spinning && active && c.acceptingManualChanges;
       final telemetry = report['telemetry'] as Map? ?? const {};
       final distance = telemetry['distanceM'] as num?;
       final meters = distance != null && distance.isFinite && distance >= 0
           ? distance.toDouble()
           : 0.0;
       final trainingElapsed = report['trainingElapsedMs'] as num?;
-      final elapsed = trainingElapsed ?? (telemetry['elapsedMs'] as num? ?? 0);
+      final elapsed =
+          trainingElapsed ??
+          (spinning ? 0 : telemetry['elapsedMs'] as num? ?? 0);
       final controls = Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -323,7 +336,9 @@ class _TrainingPageState extends State<TrainingPage>
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 child: Text(
-                  slopeLabel(selected),
+                  slopeLabel(
+                    spinning ? (program?['currentGrade'] as num?) : selected,
+                  ),
                   key: const ValueKey('trainingSlope'),
                   style: const TextStyle(
                     fontSize: 19,
@@ -433,9 +448,9 @@ class _TrainingPageState extends State<TrainingPage>
         ),
         child: Scaffold(
           appBar: AppBar(
-            title: const Text(
-              'ENTRENAMIENTO LIBRE',
-              style: TextStyle(
+            title: Text(
+              spinning ? 'SPINNING' : 'ENTRENAMIENTO LIBRE',
+              style: const TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w800,
                 letterSpacing: .8,
@@ -496,6 +511,23 @@ class _TrainingPageState extends State<TrainingPage>
               builder: (context, constraints) => ListView(
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
                 children: [
+                  if (program != null)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        '${program['name']} · Nivel ${program['level']}',
+                      ),
+                      subtitle: Text(switch (c.running
+                          ? null
+                          : program['finishReason']) {
+                        'program_completed' => 'Programa completado',
+                        'user_finish' => 'Programa detenido',
+                        final String _ => 'Programa interrumpido',
+                        _ =>
+                          'Restante ${workoutTime(program['remainingMs'] as num)}'
+                              ' · Intervalo ${workoutTime(program['intervalRemainingMs'] as num? ?? 0)}',
+                      }),
+                    ),
                   Builder(
                     builder: (context) {
                       final phase = active && showStart
@@ -567,7 +599,9 @@ class _TrainingPageState extends State<TrainingPage>
                     const Text('No se pudo activar el control.'),
                   if (error != null && (!cancelled || c.running)) ...[
                     Text(error, style: const TextStyle(color: dashboardMuted)),
-                    if (!cancelled && widget.session.preferenceError == null)
+                    if (!spinning &&
+                        !cancelled &&
+                        widget.session.preferenceError == null)
                       TextButton(
                         onPressed: c.commandBusy ? null : retry,
                         child: const Text('Reintentar conexión'),

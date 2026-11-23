@@ -148,7 +148,7 @@ class TrainerSession extends ChangeNotifier {
            AntTrainerSearchController(channelName: 'openbkool/training'),
        search = search ?? AntTrainerSearchController(),
        diagnostics = diagnostics ?? AntDiagnosticsController() {
-    this.training.addListener(_notify);
+    this.training.addListener(_onTrainingReport);
   }
   final AntTrainerSearchController training, search;
   final AntDiagnosticsController diagnostics;
@@ -179,6 +179,29 @@ class TrainerSession extends ChangeNotifier {
 
   bool get locked =>
       _connecting || training.running || training.commandBusy || saving;
+  ({String id, bool hasCsv, String? outcome})? lastWorkout;
+
+  void _onTrainingReport() {
+    final report = training.snapshot;
+    final id = report['sessionId'];
+    if (report['recordState'] == 'final' &&
+        id is String &&
+        lastWorkout?.id != id) {
+      lastWorkout = (
+        id: id,
+        hasCsv: report['csvFile'] != null,
+        outcome: report['workoutMode'] == 'spinning'
+            ? switch (report['finishReason']) {
+                'program_completed' => 'Programa completado',
+                'user_finish' => 'Programa detenido',
+                _ => 'Programa interrumpido',
+              }
+            : null,
+      );
+    }
+    _notify();
+  }
+
   void _notify() {
     if (!_disposed) notifyListeners();
   }
@@ -224,13 +247,17 @@ class TrainerSession extends ChangeNotifier {
     }
   }
 
-  Future<void> connect({bool checkOnly = false}) async {
+  Future<void> connect({bool checkOnly = false, String? programId}) async {
     if (loading || locked) return;
     _connecting = true;
     _notify();
     try {
       await training.start(
-        checkOnly ? 'training_connection_check' : 'training_connected',
+        checkOnly
+            ? 'training_connection_check'
+            : programId == null
+            ? 'training_connected'
+            : 'spinning:$programId',
         device: selected.device,
       );
     } finally {
@@ -239,10 +266,23 @@ class TrainerSession extends ChangeNotifier {
     }
   }
 
+  Future<void> stopWorkout({
+    String? expectedId,
+    bool allowPendingStart = false,
+  }) async {
+    final id = training.snapshot['sessionId'] as String?;
+    if (training.manualStopping ||
+        (expectedId != null && expectedId != id) ||
+        (id == null && !allowPendingStart)) {
+      return;
+    }
+    await training.stop(expectedId: id);
+  }
+
   @override
   void dispose() {
     _disposed = true;
-    training.removeListener(_notify);
+    training.removeListener(_onTrainingReport);
     training.dispose();
     search.dispose();
     diagnostics.dispose();
