@@ -22,6 +22,29 @@ class ConnectionCheckTest {
         assertEquals("check_wrong_model", connectionCheckOutcome(ready.copy(model = 24)))
         assertEquals("check_wrong_model", connectionCheckOutcome(ready.copy(manufacturer = 68)))
     }
+    @Test fun recentMatchingFramesEstablishPresenceBeforeManufacturerIdentification() {
+        val target = AntTrainerIdentity(30064, 112, 5)
+        val telemetry = BkoolTelemetry(0, target)
+        val frame = AntReceivedFrame(30064, 112, 5, byteArrayOf(0x10, 0, 0, 0, 0, 10, 0, 0))
+        fun state(at: Long, usable: Boolean = true, previous: Boolean = true,
+            interrupted: Boolean = false, finished: Boolean = false) =
+            antPresenceState(usable, telemetry.lastReceivedMs?.let { at - it }, previous, interrupted, finished)
+
+        telemetry.receive(frame.copy(deviceNumber = 42), 100)
+        assertEquals("connecting", state(150, previous = false))
+        telemetry.receive(frame, 150)
+        assertEquals("present", state(200))
+        val pending = ready.copy(manufacturer = null, model = null, telemetryFresh = true)
+        assertNull(connectionCheckOutcome(pending))
+        assertEquals("manufacturer_model_not_verified", pending.reason(target))
+        assertEquals("check_verified", connectionCheckOutcome(ready))
+        assertNull(ready.copy(telemetryFresh = true).reason(target))
+        assertEquals("present", state(200))
+        assertEquals("error", state(3150))
+        assertEquals("error", state(200, interrupted = true))
+        assertEquals("disconnected", state(200, usable = false, finished = true))
+    }
+
     @Test fun sessionsOnAReusableChannelHaveSeparateControllersAndNoInheritedOrders() {
         var now = 0L
         var link = ready.copy(telemetryFresh = true)

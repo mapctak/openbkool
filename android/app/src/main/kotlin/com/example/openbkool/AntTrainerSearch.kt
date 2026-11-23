@@ -44,6 +44,14 @@ internal fun connectionCheckOutcome(link: ManualControlLink): String? {
     return if (link.manufacturer == 67 && link.model == 22) "check_verified" else "check_wrong_model"
 }
 
+internal fun antPresenceState(channelUsable: Boolean, signalAgeMs: Long?, previouslyPresent: Boolean,
+    interrupted: Boolean, finished: Boolean): String = when {
+    finished -> "disconnected"
+    !interrupted && channelUsable && signalAgeMs != null && signalAgeMs in 0 until 3000 -> "present"
+    previouslyPresent || interrupted -> "error"
+    else -> "connecting"
+}
+
 /** Diagnóstico RX y entrenamiento V1; control manual solo tras activación explícita por sesión. */
 class AntTrainerSearch(context: Context, private val training: Boolean = false, private val trainingOwner: TrainingService? = null) : EventChannel.StreamHandler {
     private val context = context.applicationContext
@@ -237,7 +245,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         val actionId get() = if (checkOnly) connectionId else id
         private var restartAfterClose: ((Boolean) -> Unit)? = null
         @Volatile private var retainAfterStop = false
-        private var readySinceMs: Long? = null
+        private var presenceSinceMs: Long? = null
         private var workoutFinal = false
         private var stopping = false
         @Volatile private var radioDead = false
@@ -325,7 +333,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             if (superviseLink) {
                 val signal = linkTelemetry!!.signal(now)
                 if (signal == "signal_lost") linkInterrupted = true
-                if (checkOnly && trainingOwner?.idleExpired(now, readySinceMs) == true) {
+                if (checkOnly && trainingOwner?.idleExpired(now, presenceSinceMs) == true) {
                     finish("connection_idle_timeout"); return@submit
                 }
                 if (signal != lastSignal) {
@@ -489,12 +497,20 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             return true
         }
 
+        private fun presence(now: Long) = antPresenceState(
+            channelUsable = opened && transmissionAudit.channelUsable && !radioDead,
+            // Only frames accepted against the configured target update the RX timestamp.
+            signalAgeMs = linkTelemetry?.lastReceivedMs?.let { now - it },
+            previouslyPresent = presenceSinceMs != null,
+            interrupted = linkInterrupted || radioDead,
+            finished = finished,
+        )
+
         fun reuse(requested: AntTrainerIdentity, readOnly: Boolean, result: MethodChannel.Result,
             isStartCancelled: () -> Boolean, restart: (Boolean) -> Unit) {
-            val outcome = connectionCheckOutcome(manualLink())
             val replace = TrainingServicePolicy.replaceConnection(
-                sameTarget = requested == target, wasVerified = readySinceMs != null || linkInterrupted,
-                verification = outcome, usable = transmissionAudit.channelUsable && !radioDead,
+                sameTarget = requested == target,
+                presence = presence(android.os.SystemClock.elapsedRealtime()),
             )
             synchronized(this) {
                 if (isStartCancelled()) {
@@ -570,13 +586,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
         }
         private fun publish() {
             if (active !== this) return
-            val checked = if (training && !stopping && !cancelled && !finished) connectionCheckOutcome(manualLink()) else null
-            if (checked == "check_wrong_model") {
-                finish(checked)
-                return
-            }
-            if (checked == "check_verified" && readySinceMs == null) {
-                readySinceMs = android.os.SystemClock.elapsedRealtime()
+            val reportMs = android.os.SystemClock.elapsedRealtime()
+            val presence = if (training) presence(reportMs) else null
+            val checked = if (presence == "present") connectionCheckOutcome(manualLink()) else null
+            if (presence == "present" && presenceSinceMs == null) {
+                presenceSinceMs = reportMs
                 phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
             }
             val archived = lastFinished.takeIf { workoutFinal }
@@ -591,7 +605,6 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                         "configuredChannelId" to configuredChannelId, "adapterChannelId" to adapterChannelId,
                         "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
             }
-            val reportMs = android.os.SystemClock.elapsedRealtime()
             val report = mapOf(
                 "controlDiagnosticsVersion" to 13,
                 "recordState" to if (finished || workoutFinal) "final" else "partial",
@@ -623,17 +636,11 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 "selectedDevice" to target.toMap(),
                 "channelMode" to if (dedicated) "dedicated_bidirectional_manual" else "background_receive_only",
                 "connectionState" to if (finished) "closed" else if (checked == "check_verified") "identity_verified" else "waiting_for_identity",
-                "antConnectionState" to if (!training) null else when {
-                    finished -> when (status) {
+                "antConnectionState" to if (presence == "disconnected" && status !in setOf(
                         "user_finish", "screen_closed", "cancel_check", "disconnect_trainer",
-                        "connection_idle_timeout", "connection_replaced", "task_removed" -> "disconnected"
-                        else -> "error"
-                    }
-                    stopping -> "stopping"
-                    checked == "check_verified" -> if (checkOnly || workoutFinal) "read_only" else "training"
-                    readySinceMs != null || linkInterrupted -> "error"
-                    else -> "connecting"
-                },
+                        "connection_idle_timeout", "connection_replaced", "task_removed",
+                    )) "error" else presence,
+                "antCompatibility" to checked,
                 "connectionId" to connectionId.takeIf { training },
                 "connectionActionId" to actionId,
                 "antTelemetry" to linkTelemetry?.snapshot(reportMs),
@@ -666,6 +673,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 trainingOwner?.archiveWorkout(report)
             }
             latest = report
+            if (finished) active = null
             main.post {
                 if (latest === report) {
                     sink?.success(report)
@@ -1069,7 +1077,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
                 checkOnly = true
                 cancelled = false
             }
-            readySinceMs = android.os.SystemClock.elapsedRealtime()
+            presenceSinceMs = android.os.SystemClock.elapsedRealtime()
             phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
             publish()
             stopReplies.forEach { it.success(snapshot()) }; stopReplies.clear()
@@ -1100,9 +1108,8 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false, 
             stage = "finished"; finished = true
             main.removeCallbacks(publishLater)
             event("search_finished", "Finalizado: $status; recursos liberados=$resourcesReleased")
-            publish()
             if (resourcesReleased) AntRadioCoordinator.release(this)
-            active = null
+            publish()
             main.post {
                 val restart = restartAfterClose
                 restart?.invoke(resourcesReleased)

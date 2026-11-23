@@ -229,7 +229,7 @@ class TrainingService : Service() {
         val id = report["connectionActionId"] as? String ?: return
         if (!ready || state == "disconnected" || !isOperational()) return
         val connectionOnly = report["connectionOnly"] == true
-        val connected = state == "read_only"
+        val connected = connectionOnly && state == "present"
         val signature = id to connected
         if (notifiedState != signature) {
             notifiedState = signature
@@ -452,7 +452,6 @@ class TrainingService : Service() {
             return TrainingPermissions(
                 Build.VERSION.SDK_INT,
                 granted(Manifest.permission.POST_NOTIFICATIONS),
-                granted(Manifest.permission.BLUETOOTH_CONNECT) || granted(Manifest.permission.BLUETOOTH_SCAN),
                 manager.areNotificationsEnabled() && (Build.VERSION.SDK_INT < 26 ||
                     manager.getNotificationChannel(CHANNEL)?.importance != NotificationManager.IMPORTANCE_NONE),
             )

@@ -222,7 +222,7 @@ void main() {
         'status': 'running',
         'selectedDevice': SavedTrainer.known.device,
         'trainingServiceActive': true,
-        'antConnectionState': 'read_only',
+        'antConnectionState': 'present',
         'connectionOnly': true,
         'resourcesReleased': false,
       });
@@ -245,7 +245,7 @@ void main() {
         'connectionId': 'channel',
         'connectionActionId': 'channel',
         'connectionOnly': true,
-        'antConnectionState': 'read_only',
+        'antConnectionState': 'present',
         'trainingServiceActive': true,
         'running': false,
       };
@@ -254,7 +254,7 @@ void main() {
         'sessionId': id,
         'connectionOnly': false,
         'connectionActionId': id,
-        'antConnectionState': 'training',
+        'antConnectionState': 'present',
         'running': true,
         'manualControl': {'eligible': true, 'enabled': true, 'state': 'active'},
       };
@@ -300,10 +300,7 @@ void main() {
       await tester.pumpWidget(OpenBkoolApp(session: session));
       await tester.pumpAndSettle();
 
-      final connected = {
-        ...training.snapshot,
-        'antConnectionState': 'read_only',
-      };
+      final connected = {...training.snapshot, 'antConnectionState': 'present'};
       training.emit(connected);
       await tester.pumpAndSettle();
       expect(find.text('CONECTADO'), findsOneWidget);
@@ -356,6 +353,50 @@ void main() {
       session.dispose();
     },
   );
+
+  testWidgets('home waits for conservative stop and confirmed radio release', (
+    tester,
+  ) async {
+    final training = FakeTraining();
+    final session = TrainerSession(training: training);
+    final running = {
+      'sessionId': 'stopping-workout',
+      'running': true,
+      'selectedDevice': SavedTrainer.known.device,
+      'antConnectionState': 'present',
+      'trainingServiceActive': true,
+      'resourcesReleased': false,
+    };
+    training.snapshot = running;
+    await tester.pumpWidget(OpenBkoolApp(session: session));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+    await tester.pumpAndSettle();
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    training.emit({...running, 'status': 'stopping_zero_unconfirmed'});
+    await tester.pump(const Duration(seconds: 16));
+    expect(training.starts, isEmpty);
+    training.emit({
+      ...running,
+      'status': 'user_finish',
+      'running': false,
+      'trainingServiceActive': false,
+      'antConnectionState': 'disconnected',
+    });
+    await tester.pump(const Duration(seconds: 16));
+    expect(find.text('DESCONECTADO'), findsOneWidget);
+    expect(training.starts, isEmpty);
+
+    training.emit({...training.snapshot, 'resourcesReleased': true});
+    await tester.pump(const Duration(seconds: 14));
+    expect(training.starts, isEmpty);
+    await tester.pump(const Duration(seconds: 1));
+    expect(training.starts.single['mode'], 'training_connection_check');
+    await tester.pumpWidget(const SizedBox());
+    session.dispose();
+  });
 
   testWidgets(
     'settings exposes intact advanced tools and preserves BLE page across visits',
@@ -530,7 +571,7 @@ void main() {
       session.dispose();
     },
   );
-  testWidgets('leaving free training explicitly stops the session once', (
+  testWidgets('back and reentry preserve the active workout and its profile', (
     tester,
   ) async {
     final training = FakeTraining();
@@ -541,7 +582,20 @@ void main() {
       'sessionId': 'live',
       'selectedDevice': SavedTrainer.known.device,
       'connectionState': 'identity_verified',
-      'telemetry': {'signal': 'receiving'},
+      'trainingServiceActive': true,
+      'antConnectionState': 'present',
+      'manualControl': {
+        'eligible': true,
+        'enabled': true,
+        'state': 'active',
+        'lastRequestedPercent': 2.5,
+      },
+      'trainingElapsedMs': 42000,
+      'telemetry': {'signal': 'receiving', 'distanceM': 120},
+      'virtualElevation': [
+        [0, 0, 0],
+        [120, 2, 0],
+      ],
     };
     await tester.pumpWidget(OpenBkoolApp(session: session));
     await tester.pumpAndSettle();
@@ -556,8 +610,22 @@ void main() {
     expect(training.stops, 0);
     await tester.pageBack();
     await tester.pumpAndSettle();
-    expect(training.stops, 1);
-    expect(training.running, false);
+    expect(find.text('CONECTADO'), findsOneWidget);
+    expect(training.stops, 0);
+    expect(training.starts, isEmpty);
+    expect(training.running, true);
+    await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+    await tester.pumpAndSettle();
+    expect(find.text('CALENTAMIENTO'), findsNothing);
+    expect(find.text('00:00:42'), findsOneWidget);
+    expect(find.text('+2,5 %'), findsOneWidget);
+    expect(training.snapshot['sessionId'], 'live');
+    expect(training.snapshot['virtualElevation'], [
+      [0, 0, 0],
+      [120, 2, 0],
+    ]);
+    expect(training.starts, isEmpty);
+    expect(training.stops, 0);
     await tester.pumpWidget(const SizedBox());
     session.dispose();
   });

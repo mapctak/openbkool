@@ -20,12 +20,11 @@ class TrainingServicePolicyTest {
     }
 
     @Test fun permissionsRespectTheOsVersionAndTheStopActionMustBeVisible() {
-        val base = TrainingPermissions(32, false, false, true)
+        val base = TrainingPermissions(32, false, true)
         assertNull(TrainingServicePolicy.permissionBlock(base))
         assertNotNull(TrainingServicePolicy.permissionBlock(base.copy(sdk = 33)))
         assertNull(TrainingServicePolicy.permissionBlock(base.copy(sdk = 33, notificationsGranted = true)))
-        assertNotNull(TrainingServicePolicy.permissionBlock(base.copy(sdk = 34, notificationsGranted = true)))
-        assertNull(TrainingServicePolicy.permissionBlock(base.copy(sdk = 34, notificationsGranted = true, nearbyGranted = true)))
+        assertNull(TrainingServicePolicy.permissionBlock(base.copy(sdk = 34, notificationsGranted = true)))
         assertNotNull(TrainingServicePolicy.permissionBlock(base.copy(notificationVisible = false)))
     }
 
@@ -37,12 +36,11 @@ class TrainingServicePolicyTest {
     }
     @Test fun preparationReusesOnlyTheRequestedConnection() {
         val policy = TrainingServicePolicy
-        assertFalse(policy.replaceConnection(true, true, "check_verified", true))
-        assertFalse(policy.replaceConnection(true, false, null, false))
-        assertTrue(policy.replaceConnection(true, true, null, true))
-        assertTrue(policy.replaceConnection(true, true, "check_verified", false))
-        assertTrue(policy.replaceConnection(false, true, "check_verified", true))
-        assertTrue(policy.replaceConnection(true, false, "check_wrong_model", true))
+        assertFalse(policy.replaceConnection(true, "present"))
+        assertFalse(policy.replaceConnection(true, "connecting"))
+        assertTrue(policy.replaceConnection(true, "error"))
+        assertTrue(policy.replaceConnection(true, "disconnected"))
+        assertTrue(policy.replaceConnection(false, "present"))
     }
 
     @Test fun oldCheckAndNotificationCannotStopANewWorkout() {

@@ -155,7 +155,6 @@ class MainActivity : FlutterActivity() {
         val status = TrainingService.permissionStatus(this)
         val missing = buildList {
             if (Build.VERSION.SDK_INT >= 33 && !status.notificationsGranted) add(Manifest.permission.POST_NOTIFICATIONS)
-            if (Build.VERSION.SDK_INT >= 34 && !status.nearbyGranted) add(Manifest.permission.BLUETOOTH_CONNECT)
         }
         if (missing.isEmpty()) {
             TrainingService.start(this, device, result, checkOnly)

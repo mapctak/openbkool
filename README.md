@@ -3,15 +3,19 @@
 **Inicio** conecta automáticamente con el rodillo guardado en modo de solo
 lectura. La tarjeta muestra **CONECTANDO…**, **CONECTADO** o **DESCONECTADO**
 según el estado que publica el servicio Android. El estado conectado requiere
-identidad ANT exacta, fabricante 67, modelo 22 y señal vigente. Si una búsqueda
-agota su tiempo o se libera un enlace perdido, Inicio espera 15 segundos antes
-de volver a intentarlo mientras permanece visible y en primer plano.
+un canal operativo y tramas recientes de la identidad ANT exacta. Fabricante
+67 y modelo 22 se verifican por separado antes de habilitar pendientes. Si
+vence la búsqueda o se libera un canal perdido o cerrado por DETENER, Inicio
+espera 15 segundos antes de reintentar mientras sigue visible y en primer plano.
 
 El servicio libera el canal de solo lectura al quitar la tarea, al permanecer
 15 minutos en segundo plano o al iniciar los diagnósticos avanzados para que
 puedan usar la radio. La pérdida de enlace y los fallos de servicio se gestionan
 con la supervisión nativa. Un entrenamiento posterior usa el canal si sigue
-vigente o continúa la conexión durante el calentamiento.
+vigente o continúa la conexión durante el calentamiento. Volver a Inicio
+conserva la sesión activa. Para terminarla se usa **DETENER** en el entrenamiento
+o en la notificación. ANT puede funcionar con Bluetooth apagado y sin pedir su
+permiso para el servicio de entrenamiento. [Requisitos de Android para servicios con un dispositivo conectado](https://developer.android.com/develop/background-work/services/fgs/service-types#connected-device).
 
 **ENTRENAMIENTO LIBRE** comienza con un calentamiento y conecta por ANT
 propietario con la identidad guardada del Bkool Smart Pro v1. El cuadro muestra

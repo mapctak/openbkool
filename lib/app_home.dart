@@ -70,6 +70,8 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
         !session.loading &&
         !session.locked &&
         !session.readOnly &&
+        session.training.snapshot['resourcesReleased'] != false &&
+        session.training.snapshot['status'] != 'stopping_zero_unconfirmed' &&
         session.preferenceError == null &&
         session.connection != TrainerConnection.connecting;
   }
@@ -89,16 +91,19 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
   void scheduleConnectionRetry() {
     if (!canConnectFromHome || connectionRetry != null) return;
     final report = session.training.snapshot;
-    if (!const {
-      'check_timeout',
-      'radio_search_timeout',
-      'disconnected',
-      'disconnect_trainer',
-      'connection_idle_timeout',
-      'channel_death',
-      'channel_closed',
-      'radio_service_disconnected',
-    }.contains(report['status'])) {
+    final status = report['status'] as String?;
+    if (status?.startsWith('link_lost:') != true &&
+        !const {
+          'user_finish',
+          'check_timeout',
+          'radio_search_timeout',
+          'disconnected',
+          'disconnect_trainer',
+          'connection_idle_timeout',
+          'channel_death',
+          'channel_closed',
+          'radio_service_disconnected',
+        }.contains(status)) {
       return;
     }
     connectionRetry = Timer(const Duration(seconds: 15), () {
@@ -146,7 +151,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell>
     await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => TrainingPage(session: session)),
     );
-    connectFromHome();
+    scheduleConnectionRetry();
   }
 
   Future<void> chooseTrainer() async {

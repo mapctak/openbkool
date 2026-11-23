@@ -88,7 +88,8 @@ TrainerConnection connectionFor(Map<String, Object?> r, SavedTrainer selected) {
       return TrainerConnection.disconnected;
     }
     return switch (state) {
-      'read_only' || 'training' when r['trainingServiceActive'] == true =>
+      'present' || 'read_only' || 'training'
+          when r['trainingServiceActive'] == true =>
         TrainerConnection.connected,
       'stopping' => TrainerConnection.disconnecting,
       'connecting' => TrainerConnection.connecting,
@@ -166,9 +167,16 @@ class TrainerSession extends ChangeNotifier {
 
   String? preferenceError;
   int _selectionRevision = 0;
-  TrainerConnection get connection => _connecting && !training.running
-      ? TrainerConnection.connecting
-      : connectionFor(training.snapshot, selected);
+  TrainerConnection get connection {
+    final state = connectionFor(training.snapshot, selected);
+    if (_connecting &&
+        !training.running &&
+        state != TrainerConnection.connected) {
+      return TrainerConnection.connecting;
+    }
+    return state;
+  }
+
   bool get locked =>
       _connecting || training.running || training.commandBusy || saving;
   void _notify() {

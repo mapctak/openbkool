@@ -241,6 +241,11 @@ class AntTrainerSearchController extends ChangeNotifier {
       await _listen();
       if (_disposed || running || generation != _manualGeneration) return;
       final training = _nativeTrainingLifecycle;
+      final reusingPresentLink =
+          training &&
+          snapshot['antConnectionState'] == 'present' &&
+          snapshot['connectionOnly'] == true &&
+          snapshot['trainingServiceActive'] == true;
       generation = ++_manualGeneration;
       _cancelDeferredSlope("new_session");
       _clientSlopeEvents.clear();
@@ -249,7 +254,7 @@ class AntTrainerSearchController extends ChangeNotifier {
         ...snapshot,
         if (training) ...{
           'sessionId': null,
-          'reportSequence': null,
+          if (!reusingPresentLink) 'reportSequence': null,
           'identificationTiming': null,
           'transmissionDiagnostics': null,
           'radioCaptureCorrelation': null,
@@ -281,7 +286,7 @@ class AntTrainerSearchController extends ChangeNotifier {
         'status': 'starting',
         'running': mode != 'training_connection_check',
         if (training) ...{
-          'antConnectionState': 'connecting',
+          'antConnectionState': reusingPresentLink ? 'present' : 'connecting',
           'connectionOnly': mode == 'training_connection_check',
           'connectionActionId': null,
         },

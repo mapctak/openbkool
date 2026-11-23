@@ -155,14 +155,13 @@ class _TrainingPageState extends State<TrainingPage>
     }
   }
 
-  Future<void> stop({String reason = 'user_finish'}) async {
+  Future<void> stop() async {
     setState(() {
       cancelled = true;
       showStart = false;
     });
     final controller = widget.session.training;
     await controller.stop(
-      reason: reason,
       expectedId: controller.snapshot['connectionActionId'] as String?,
     );
   }
@@ -265,7 +264,10 @@ class _TrainingPageState extends State<TrainingPage>
       final id = report['sessionId'] as String?;
       if (sessionId != id) {
         sessionId = id;
-        selected = (manual['lastRequestedPercent'] as num?)?.toDouble() ?? 0;
+        selected =
+            (c.pendingManualPercent ?? manual['lastRequestedPercent'] as num?)
+                ?.toDouble() ??
+            0;
         if (!trainingSlopes.contains(selected)) selected = 0;
       }
       final available = id != null && readyForControl(report) && !cancelled;
@@ -429,204 +431,183 @@ class _TrainingPageState extends State<TrainingPage>
             brightness: Brightness.dark,
           ),
         ),
-        child: PopScope(
-          canPop: !starting && !c.running && !c.commandBusy,
-          onPopInvokedWithResult: (didPop, _) async {
-            if (didPop || c.manualStopping) return;
-            await stop(reason: 'screen_closed');
-            if (context.mounted && !c.running && !c.commandBusy) {
-              Navigator.pop(context);
-            }
-          },
-          child: Scaffold(
-            appBar: AppBar(
-              title: const Text(
-                'ENTRENAMIENTO LIBRE',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: .8,
-                ),
+        child: Scaffold(
+          appBar: AppBar(
+            title: const Text(
+              'ENTRENAMIENTO LIBRE',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                letterSpacing: .8,
               ),
-              backgroundColor: dashboardInk,
-              actions: [
-                PopupMenuButton<bool>(
-                  tooltip: 'Exportar entrenamiento',
-                  enabled: id != null,
-                  onSelected: (csv) => unawaited(export(csv: csv)),
-                  itemBuilder: (_) => [
-                    if (!c.running && report['csvFile'] != null)
-                      const PopupMenuItem(
-                        value: true,
-                        child: Text('Copiar CSV'),
-                      ),
-                    PopupMenuItem(
-                      value: false,
-                      child: Text(
-                        c.running ? 'Copiar JSON parcial' : 'Copiar JSON',
-                      ),
-                    ),
-                  ],
-                  icon: const Icon(Icons.more_horiz),
-                ),
-              ],
             ),
-            bottomNavigationBar: SafeArea(
-              minimum: const EdgeInsets.fromLTRB(16, 6, 16, 12),
-              child: Center(
-                heightFactor: 1,
-                child: FilledButton.icon(
-                  onPressed:
-                      (c.running || (starting && !cancelled)) &&
-                          !c.manualStopping
-                      ? stop
-                      : null,
-                  icon: const Icon(Icons.stop_rounded),
-                  label: FittedBox(
-                    fit: BoxFit.scaleDown,
+            backgroundColor: dashboardInk,
+            actions: [
+              PopupMenuButton<bool>(
+                tooltip: 'Exportar entrenamiento',
+                enabled: id != null,
+                onSelected: (csv) => unawaited(export(csv: csv)),
+                itemBuilder: (_) => [
+                  if (!c.running && report['csvFile'] != null)
+                    const PopupMenuItem(value: true, child: Text('Copiar CSV')),
+                  PopupMenuItem(
+                    value: false,
                     child: Text(
-                      c.manualStopping
-                          ? 'DETENIENDO…'
-                          : 'DETENER ENTRENAMIENTO',
+                      c.running ? 'Copiar JSON parcial' : 'Copiar JSON',
                     ),
                   ),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(0, 48),
-                    backgroundColor: const Color(0xff653337),
-                    foregroundColor: const Color(0xffffe2e1),
-                    textStyle: const TextStyle(
-                      fontFamily: 'Roboto',
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: .7,
-                    ),
+                ],
+                icon: const Icon(Icons.more_horiz),
+              ),
+            ],
+          ),
+          bottomNavigationBar: SafeArea(
+            minimum: const EdgeInsets.fromLTRB(16, 6, 16, 12),
+            child: Center(
+              heightFactor: 1,
+              child: FilledButton.icon(
+                onPressed:
+                    (c.running || (starting && !cancelled)) && !c.manualStopping
+                    ? stop
+                    : null,
+                icon: const Icon(Icons.stop_rounded),
+                label: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    c.manualStopping ? 'DETENIENDO…' : 'DETENER ENTRENAMIENTO',
+                  ),
+                ),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size(0, 48),
+                  backgroundColor: const Color(0xff653337),
+                  foregroundColor: const Color(0xffffe2e1),
+                  textStyle: const TextStyle(
+                    fontFamily: 'Roboto',
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: .7,
                   ),
                 ),
               ),
             ),
-            body: SafeArea(
-              bottom: false,
-              child: LayoutBuilder(
-                builder: (context, constraints) => ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                  children: [
-                    Builder(
-                      builder: (context) {
-                        final phase = active && showStart
-                            ? '¡COMIENZA EL ENTRENAMIENTO!'
-                            : warmingUp
-                            ? 'CALENTAMIENTO'
-                            : 'TIEMPO DE ENTRENAMIENTO';
-                        final clock = Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            SizedBox(
-                              height: 30,
-                              child: Align(
-                                alignment: Alignment.centerLeft,
-                                child: Semantics(
-                                  liveRegion: true,
-                                  child: Text(
-                                    phase,
-                                    key: const ValueKey('trainingPhase'),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      color: active && showStart
-                                          ? dashboardAccent
-                                          : dashboardMuted,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w700,
-                                      letterSpacing: .65,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            FittedBox(
-                              fit: BoxFit.scaleDown,
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                workoutTime(elapsed),
-                                style: const TextStyle(
-                                  fontSize: 32,
-                                  height: 1.2,
-                                  fontWeight: FontWeight.w700,
-                                  color: Colors.white,
-                                  fontFeatures: [FontFeature.tabularFigures()],
-                                ),
-                              ),
-                            ),
-                          ],
-                        );
-                        final slope = Column(
-                          children: [label('PENDIENTE'), controls],
-                        );
-                        return constraints.maxWidth >= 320
-                            ? Row(
-                                children: [
-                                  Expanded(child: clock),
-                                  const SizedBox(width: 8),
-                                  slope,
-                                ],
-                              )
-                            : Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [clock, slope],
-                              );
-                      },
-                    ),
-                    if (activationFailed ||
-                        (c.running && c.controlTransportUncertain))
-                      const Text('No se pudo activar el control.'),
-                    if (error != null && (!cancelled || c.running)) ...[
-                      Text(
-                        error,
-                        style: const TextStyle(color: dashboardMuted),
-                      ),
-                      if (!cancelled && widget.session.preferenceError == null)
-                        TextButton(
-                          onPressed: c.commandBusy ? null : retry,
-                          child: const Text('Reintentar conexión'),
-                        ),
-                    ],
-                    const SizedBox(height: 12),
-                    if (constraints.maxWidth >= 680)
-                      Row(
+          ),
+          body: SafeArea(
+            bottom: false,
+            child: LayoutBuilder(
+              builder: (context, constraints) => ListView(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                children: [
+                  Builder(
+                    builder: (context) {
+                      final phase = active && showStart
+                          ? '¡COMIENZA EL ENTRENAMIENTO!'
+                          : warmingUp
+                          ? 'CALENTAMIENTO'
+                          : 'TIEMPO DE ENTRENAMIENTO';
+                      final clock = Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Expanded(
-                            child: Column(
-                              children: [
-                                ConstrainedBox(
-                                  constraints: const BoxConstraints(
-                                    maxWidth: 330,
+                          SizedBox(
+                            height: 30,
+                            child: Align(
+                              alignment: Alignment.centerLeft,
+                              child: Semantics(
+                                liveRegion: true,
+                                child: Text(
+                                  phase,
+                                  key: const ValueKey('trainingPhase'),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: active && showStart
+                                        ? dashboardAccent
+                                        : dashboardMuted,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: .65,
                                   ),
-                                  child: instruments,
                                 ),
-                                const SizedBox(height: 8),
-                                distanceView(label, distance != null, meters),
-                              ],
+                              ),
                             ),
                           ),
-                          const SizedBox(width: 18),
-                          Expanded(
-                            child: profile(
-                              (constraints.maxHeight - 123).clamp(104.0, 152.0),
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              workoutTime(elapsed),
+                              style: const TextStyle(
+                                fontSize: 32,
+                                height: 1.2,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                                fontFeatures: [FontFeature.tabularFigures()],
+                              ),
                             ),
                           ),
                         ],
-                      )
-                    else ...[
-                      instruments,
-                      const SizedBox(height: 12),
-                      distanceView(label, distance != null, meters),
-                      const SizedBox(height: 14),
-                      profile(
-                        (constraints.maxHeight * .24).clamp(112.0, 172.0),
+                      );
+                      final slope = Column(
+                        children: [label('PENDIENTE'), controls],
+                      );
+                      return constraints.maxWidth >= 320
+                          ? Row(
+                              children: [
+                                Expanded(child: clock),
+                                const SizedBox(width: 8),
+                                slope,
+                              ],
+                            )
+                          : Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [clock, slope],
+                            );
+                    },
+                  ),
+                  if (activationFailed ||
+                      (c.running && c.controlTransportUncertain))
+                    const Text('No se pudo activar el control.'),
+                  if (error != null && (!cancelled || c.running)) ...[
+                    Text(error, style: const TextStyle(color: dashboardMuted)),
+                    if (!cancelled && widget.session.preferenceError == null)
+                      TextButton(
+                        onPressed: c.commandBusy ? null : retry,
+                        child: const Text('Reintentar conexión'),
                       ),
-                    ],
                   ],
-                ),
+                  const SizedBox(height: 12),
+                  if (constraints.maxWidth >= 680)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            children: [
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(
+                                  maxWidth: 330,
+                                ),
+                                child: instruments,
+                              ),
+                              const SizedBox(height: 8),
+                              distanceView(label, distance != null, meters),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 18),
+                        Expanded(
+                          child: profile(
+                            (constraints.maxHeight - 123).clamp(104.0, 152.0),
+                          ),
+                        ),
+                      ],
+                    )
+                  else ...[
+                    instruments,
+                    const SizedBox(height: 12),
+                    distanceView(label, distance != null, meters),
+                    const SizedBox(height: 14),
+                    profile((constraints.maxHeight * .24).clamp(112.0, 172.0)),
+                  ],
+                ],
               ),
             ),
           ),
