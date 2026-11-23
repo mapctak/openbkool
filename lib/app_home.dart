@@ -26,49 +26,127 @@ class OpenBkoolShell extends StatefulWidget {
   State<OpenBkoolShell> createState() => _OpenBkoolShellState();
 }
 
-class _OpenBkoolShellState extends State<OpenBkoolShell> {
+class _OpenBkoolShellState extends State<OpenBkoolShell>
+    with WidgetsBindingObserver {
   late final session = widget.session ?? TrainerSession();
   bool advanced = false, visited = false;
+  bool initialized = false;
+  Timer? connectionRetry;
+
   @override
   void initState() {
     super.initState();
-    unawaited(session.restore());
-    if (widget.session == null) {
-      unawaited(restoreActiveTraining());
-    }
+    WidgetsBinding.instance.addObserver(this);
+    session.addListener(scheduleConnectionRetry);
+    unawaited(restoreConnection());
   }
 
-  Future<void> restoreActiveTraining() async {
-    try {
-      await session.training.attachToTraining();
-      if (mounted &&
-          session.training.running &&
-          !session.checkRunning &&
-          ModalRoute.of(context)?.isCurrent == true) {
-        openTraining();
+  Future<void> restoreConnection() async {
+    await session.restore();
+    if (!mounted) return;
+    if (widget.session == null) {
+      try {
+        await session.training.attachToTraining();
+      } catch (_) {
+        // The connection attempt reports transport errors through the controller.
       }
-    } catch (_) {
-      // Starting a workout still reports channel errors through its normal UI.
+    }
+    if (!mounted) return;
+    initialized = true;
+    if (session.training.running && ModalRoute.of(context)?.isCurrent == true) {
+      if (widget.session == null) unawaited(openTraining());
+      return;
+    }
+    connectFromHome();
+  }
+
+  bool get canConnectFromHome {
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    return mounted &&
+        initialized &&
+        !advanced &&
+        (lifecycle == null || lifecycle == AppLifecycleState.resumed) &&
+        ModalRoute.of(context)?.isCurrent == true &&
+        !session.loading &&
+        !session.locked &&
+        !session.readOnly &&
+        session.preferenceError == null &&
+        session.connection != TrainerConnection.connecting;
+  }
+
+  void connectFromHome() {
+    if (!canConnectFromHome ||
+        session.training.snapshot['clientErrorCode'] ==
+            'training_service_blocked' ||
+        session.training.snapshot['status'] == 'cleanup_failed') {
+      return;
+    }
+    connectionRetry?.cancel();
+    connectionRetry = null;
+    unawaited(session.connect(checkOnly: true));
+  }
+
+  void scheduleConnectionRetry() {
+    if (!canConnectFromHome || connectionRetry != null) return;
+    final report = session.training.snapshot;
+    if (!const {
+      'check_timeout',
+      'radio_search_timeout',
+      'disconnected',
+      'disconnect_trainer',
+      'connection_idle_timeout',
+      'channel_death',
+      'channel_closed',
+      'radio_service_disconnected',
+    }.contains(report['status'])) {
+      return;
+    }
+    connectionRetry = Timer(const Duration(seconds: 15), () {
+      connectionRetry = null;
+      connectFromHome();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (connectionRetry == null) connectFromHome();
+    } else {
+      connectionRetry?.cancel();
+      connectionRetry = null;
     }
   }
 
   @override
   void dispose() {
+    connectionRetry?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    session.removeListener(scheduleConnectionRetry);
     if (widget.session == null) session.dispose();
     super.dispose();
   }
 
-  void showAdvanced() {
+  Future<void> showAdvanced() async {
     setState(() {
       visited = true;
       advanced = true;
     });
+    if (session.readOnly ||
+        (session.training.commandBusy && !session.training.running)) {
+      await session.disconnect();
+    }
   }
 
-  void openTraining() {
-    Navigator.of(context).push<void>(
+  void closeAdvanced() {
+    setState(() => advanced = false);
+    connectFromHome();
+  }
+
+  Future<void> openTraining() async {
+    await Navigator.of(context).push<void>(
       MaterialPageRoute(builder: (_) => TrainingPage(session: session)),
     );
+    connectFromHome();
   }
 
   Future<void> chooseTrainer() async {
@@ -77,8 +155,8 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
     );
   }
 
-  void openSettings() {
-    Navigator.of(context).push<void>(
+  Future<void> openSettings() async {
+    await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (context) => Scaffold(
           appBar: AppBar(title: const Text('Ajustes')),
@@ -102,7 +180,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () {
                   Navigator.pop(context);
-                  showAdvanced();
+                  unawaited(showAdvanced());
                 },
               ),
             ],
@@ -110,6 +188,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
         ),
       ),
     );
+    connectFromHome();
   }
 
   @override
@@ -118,7 +197,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
     builder: (context, _) => PopScope(
       canPop: !advanced,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) setState(() => advanced = false);
+        if (!didPop) closeAdvanced();
       },
       child: IndexedStack(
         index: advanced ? 1 : 0,
@@ -142,58 +221,22 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
                         horizontal: 14,
-                        vertical: 6,
+                        vertical: 10,
                       ),
                       child: Row(
                         children: [
                           Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  session.selected.name,
-                                  style: Theme.of(context).textTheme.titleSmall,
-                                ),
-                                const SizedBox(height: 4),
-                                ConnectionBadge(state: session.connection),
-                              ],
+                            child: Text(
+                              session.selected.name,
+                              style: Theme.of(context).textTheme.titleSmall,
                             ),
                           ),
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 156),
-                            child: TextButton(
-                              onPressed: session.training.manualStopping
-                                  ? null
-                                  : session.checkRunning
-                                  ? () => session.disconnect(cancelCheck: true)
-                                  : session.loading ||
-                                        session.locked ||
-                                        session.preferenceError != null
-                                  ? null
-                                  : session.readOnly
-                                  ? session.disconnect
-                                  : () => session.connect(checkOnly: true),
-                              child: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child: Text(
-                                  session.checkRunning
-                                      ? 'Cancelar'
-                                      : session.readOnly
-                                      ? 'Desconectar'
-                                      : 'Comprobar conexión',
-                                ),
-                              ),
-                            ),
-                          ),
+                          const SizedBox(width: 8),
+                          ConnectionBadge(state: session.connection),
                         ],
                       ),
                     ),
                   ),
-                  if (session.checkFeedback case final feedback?)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
-                      child: Semantics(liveRegion: true, child: Text(feedback)),
-                    ),
                   if (session.loading) const LinearProgressIndicator(),
                   if (session.preferenceError != null)
                     const Text('No se pudo leer el rodillo guardado.'),
@@ -216,10 +259,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
             ),
           ),
           if (visited)
-            widget.advancedBuilder(
-              session,
-              () => setState(() => advanced = false),
-            )
+            widget.advancedBuilder(session, closeAdvanced)
           else
             const SizedBox.shrink(),
         ],
@@ -235,9 +275,12 @@ class ConnectionBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = state == TrainerConnection.connected
         ? emerald
-        : state == TrainerConnection.error
-        ? Theme.of(context).colorScheme.error
         : Colors.blueGrey;
+    final label = switch (state) {
+      TrainerConnection.connected => 'CONECTADO',
+      TrainerConnection.connecting => 'CONECTANDO…',
+      _ => 'DESCONECTADO',
+    };
     return Semantics(
       liveRegion: true,
       child: Row(
@@ -246,8 +289,6 @@ class ConnectionBadge extends StatelessWidget {
           Icon(
             state == TrainerConnection.connected
                 ? Icons.check_circle
-                : state == TrainerConnection.error
-                ? Icons.error_outline
                 : Icons.circle_outlined,
             size: 18,
             color: color,
@@ -255,7 +296,7 @@ class ConnectionBadge extends StatelessWidget {
           const SizedBox(width: 8),
           Flexible(
             child: Text(
-              connectionLabel(state),
+              label,
               style: TextStyle(color: color, fontWeight: FontWeight.w600),
             ),
           ),

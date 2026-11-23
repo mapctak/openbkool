@@ -88,7 +88,8 @@ TrainerConnection connectionFor(Map<String, Object?> r, SavedTrainer selected) {
       return TrainerConnection.disconnected;
     }
     return switch (state) {
-      'read_only' || 'training' => TrainerConnection.connected,
+      'read_only' || 'training' when r['trainingServiceActive'] == true =>
+        TrainerConnection.connected,
       'stopping' => TrainerConnection.disconnecting,
       'connecting' => TrainerConnection.connecting,
       'error' => TrainerConnection.error,
@@ -135,14 +136,6 @@ TrainerConnection connectionFor(Map<String, Object?> r, SavedTrainer selected) {
   return TrainerConnection.disconnected;
 }
 
-String connectionLabel(TrainerConnection c) => switch (c) {
-  TrainerConnection.disconnected => 'Desconectado',
-  TrainerConnection.connecting => 'Conectando',
-  TrainerConnection.connected => 'Conectado',
-  TrainerConnection.disconnecting => 'Desconectando',
-  TrainerConnection.error => 'Error de conexión',
-};
-
 class TrainerSession extends ChangeNotifier {
   TrainerSession({
     AntTrainerSearchController? training,
@@ -162,36 +155,14 @@ class TrainerSession extends ChangeNotifier {
   SavedTrainer selected = SavedTrainer.known;
   bool loading = true, saving = false, _disposed = false;
   bool _connecting = false;
-  bool _startingCheck = false;
   bool get readOnly =>
       training.snapshot['connectionOnly'] == true &&
       training.snapshot['trainingServiceActive'] == true;
 
-  bool get checkRunning =>
-      _startingCheck ||
-      (readOnly && training.snapshot['antConnectionState'] == 'connecting') ||
-      (training.running &&
-          training.snapshot['mode'] == 'training_connection_check');
-
-  Future<void> disconnect({bool cancelCheck = false}) => training.stop(
-    reason: cancelCheck ? 'cancel_check' : 'disconnect_trainer',
+  Future<void> disconnect() => training.stop(
+    reason: 'disconnect_trainer',
     expectedId: training.snapshot['connectionActionId'] as String?,
   );
-
-  String? get checkFeedback {
-    final report = training.snapshot;
-    if (checkRunning || report['mode'] != 'training_connection_check') {
-      return null;
-    }
-    return switch (report['status']) {
-      'check_verified' => 'Rodillo verificado. Comprobación finalizada.',
-      'user_finish' || 'cancel_check' => 'Comprobación cancelada.',
-      'check_wrong_model' => 'El rodillo no coincide con el Smart Pro v1.',
-      _ when connection == TrainerConnection.error =>
-        'No se pudo verificar el rodillo. Revisa ANT y los permisos.',
-      _ => null,
-    };
-  }
 
   String? preferenceError;
   int _selectionRevision = 0;
@@ -248,7 +219,6 @@ class TrainerSession extends ChangeNotifier {
   Future<void> connect({bool checkOnly = false}) async {
     if (loading || locked) return;
     _connecting = true;
-    _startingCheck = checkOnly;
     _notify();
     try {
       await training.start(
@@ -257,7 +227,6 @@ class TrainerSession extends ChangeNotifier {
       );
     } finally {
       _connecting = false;
-      _startingCheck = false;
       _notify();
     }
   }

@@ -1,5 +1,18 @@
 # OpenBkool
 
+**Inicio** conecta automáticamente con el rodillo guardado en modo de solo
+lectura. La tarjeta muestra **CONECTANDO…**, **CONECTADO** o **DESCONECTADO**
+según el estado que publica el servicio Android. El estado conectado requiere
+identidad ANT exacta, fabricante 67, modelo 22 y señal vigente. Si una búsqueda
+agota su tiempo o se libera un enlace perdido, Inicio espera 15 segundos antes
+de volver a intentarlo mientras permanece visible y en primer plano.
+
+El servicio libera el canal de solo lectura al quitar la tarea, al permanecer
+15 minutos en segundo plano o al iniciar los diagnósticos avanzados para que
+puedan usar la radio. La pérdida de enlace y los fallos de servicio se gestionan
+con la supervisión nativa. Un entrenamiento posterior usa el canal si sigue
+vigente o continúa la conexión durante el calentamiento.
+
 **ENTRENAMIENTO LIBRE** comienza con un calentamiento y conecta por ANT
 propietario con la identidad guardada del Bkool Smart Pro v1. El cuadro muestra
 tiempo, velocidad, potencia, cadencia, distancia y un perfil de elevación virtual.

@@ -137,14 +137,25 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('Desconectado'), findsOneWidget);
+      expect(find.text('CONECTANDO…'), findsOneWidget);
+      expect(training.starts.single, {
+        'mode': 'training_connection_check',
+        'device': const SavedTrainer(123, 112, 6).device,
+      });
+      training.emit({
+        ...training.snapshot,
+        'trainingServiceActive': false,
+        'antConnectionState': 'error',
+        'status': 'radio_search_timeout',
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('DESCONECTADO'), findsOneWidget);
       expect(find.text('ANT · 123/112/6'), findsNothing);
-      expect(training.starts, isEmpty);
       expect(find.text('ENTRENAMIENTO LIBRE'), findsOneWidget);
       expect(find.text('Control manual 1.4'), findsNothing);
       await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
       await tester.pumpAndSettle();
-      expect(training.starts.single, {
+      expect(training.starts.last, {
         'mode': 'training_connected',
         'device': const SavedTrainer(123, 112, 6).device,
       });
@@ -173,8 +184,8 @@ void main() {
       );
       await tester.tap(find.text('Reintentar conexión'));
       await tester.pumpAndSettle();
-      expect(training.starts, hasLength(2));
-      expect(training.starts.last, training.starts.first);
+      expect(training.starts, hasLength(3));
+      expect(training.starts.last, training.starts[1]);
       await tester.tap(find.text('DETENER ENTRENAMIENTO'));
       await tester.pumpAndSettle();
       expect(training.stops, 1);
@@ -184,7 +195,7 @@ void main() {
     },
   );
   testWidgets(
-    'home checks the saved identity, remains on home and cancels cleanly',
+    'home connects automatically and reuses the link for successive workouts',
     (tester) async {
       final training = FakeTraining();
       final session = TrainerSession(training: training);
@@ -198,21 +209,13 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Bkool Smart Pro v1'), findsOneWidget);
-      expect(find.text('Desconectado'), findsOneWidget);
-      expect(find.text('Pendiente manual y telemetría ANT'), findsNothing);
-      await tester.tap(find.text('Comprobar conexión'));
-      await tester.pumpAndSettle();
+      expect(find.text('Comprobar conexión'), findsNothing);
+      expect(find.text('CALENTAMIENTO'), findsNothing);
+      expect(find.text('CONECTANDO…'), findsOneWidget);
       expect(training.starts.single, {
         'mode': 'training_connection_check',
         'device': SavedTrainer.known.device,
       });
-      expect(find.text('Conectando'), findsOneWidget);
-      await tester.tap(find.text('Cancelar'));
-      await tester.pumpAndSettle();
-      expect(training.stops, 1);
-      expect(find.text('Comprobación cancelada.'), findsOneWidget);
-      await tester.tap(find.text('Comprobar conexión'));
-      await tester.pumpAndSettle();
       training.emit({
         'mode': 'training_connection_check',
         'running': false,
@@ -224,14 +227,15 @@ void main() {
         'resourcesReleased': false,
       });
       await tester.pumpAndSettle();
-      expect(find.text('Conectado'), findsOneWidget);
-      expect(find.text('Desconectar'), findsOneWidget);
+      expect(find.text('CONECTADO'), findsOneWidget);
+      expect(find.text('Desconectar'), findsNothing);
       await tester.tap(find.byTooltip('Ajustes'));
       await tester.pumpAndSettle();
       await tester.pageBack();
       await tester.pumpAndSettle();
-      expect(find.text('Conectado'), findsOneWidget);
-      expect(training.stops, 1);
+      expect(find.text('CONECTADO'), findsOneWidget);
+      expect(training.starts, hasLength(1));
+      expect(training.stops, 0);
       await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
       await tester.pumpAndSettle();
       expect(training.starts.last['mode'], 'training_connected');
@@ -275,7 +279,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.pageBack();
       await tester.pumpAndSettle();
-      expect(find.text('Conectado'), findsOneWidget);
+      expect(find.text('CONECTADO'), findsOneWidget);
       await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
       await tester.pumpAndSettle();
       training.emit(workout('second'));
@@ -289,9 +293,81 @@ void main() {
   );
 
   testWidgets(
+    'home retries a released link only while visible and foregrounded',
+    (tester) async {
+      final training = FakeTraining();
+      final session = TrainerSession(training: training);
+      await tester.pumpWidget(OpenBkoolApp(session: session));
+      await tester.pumpAndSettle();
+
+      final connected = {
+        ...training.snapshot,
+        'antConnectionState': 'read_only',
+      };
+      training.emit(connected);
+      await tester.pumpAndSettle();
+      expect(find.text('CONECTADO'), findsOneWidget);
+      expect(training.snapshot['sessionId'], isNull);
+      expect(training.snapshot['virtualElevation'], isNull);
+      expect(training.snapshot['trainingElapsedMs'], isNull);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(training.starts, hasLength(1));
+
+      training.emit({...connected, 'antConnectionState': 'error'});
+      await tester.pumpAndSettle();
+      expect(find.text('DESCONECTADO'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 16));
+      expect(training.starts, hasLength(1));
+
+      training.emit({
+        ...training.snapshot,
+        'status': 'disconnected',
+        'trainingServiceActive': false,
+      });
+      await tester.pump(const Duration(seconds: 14));
+      expect(training.starts, hasLength(1));
+      await tester.pump(const Duration(seconds: 1));
+      expect(training.starts, hasLength(2));
+      expect(find.text('CONECTANDO…'), findsOneWidget);
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      training.emit({
+        ...training.snapshot,
+        'status': 'radio_search_timeout',
+        'antConnectionState': 'error',
+        'trainingServiceActive': false,
+      });
+      await tester.pump(const Duration(seconds: 16));
+      expect(training.starts, hasLength(2));
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(training.starts, hasLength(3));
+      expect(
+        training.starts.every(
+          (call) => call['mode'] == 'training_connection_check',
+        ),
+        isTrue,
+      );
+      expect(training.stops, 0);
+      await tester.pumpWidget(const SizedBox());
+      session.dispose();
+    },
+  );
+
+  testWidgets(
     'settings exposes intact advanced tools and preserves BLE page across visits',
     (tester) async {
       const trainingEvents = MethodChannel('openbkool/training/events');
+      const trainingCommands = MethodChannel('openbkool/training');
+      messenger.setMockMethodCallHandler(trainingCommands, (call) async {
+        if (call.method == 'start') {
+          throw PlatformException(code: 'training_service_blocked');
+        }
+        return {'running': false, 'status': 'disconnect_trainer'};
+      });
       messenger.setMockMethodCallHandler(trainingEvents, (call) async {
         if (call.method == 'listen') {
           await messenger.handlePlatformMessage(
