@@ -4,6 +4,22 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+class _DeferredSlope {
+  _DeferredSlope(
+    this.percent,
+    this.sessionId,
+    this.generation,
+    this.rapidAdjustment,
+  );
+  final double percent;
+  final bool rapidAdjustment;
+  final stopwatch = Stopwatch()..start();
+  final String? sessionId;
+  final int generation;
+  final requestedAtUtc = DateTime.now().toUtc().toIso8601String();
+  final done = Completer<void>();
+}
+
 class AntTrainerSearchController extends ChangeNotifier {
   AntTrainerSearchController({String channelName = 'openbkool/ant_search'})
     : channel = MethodChannel(channelName),
@@ -14,15 +30,173 @@ class AntTrainerSearchController extends ChangeNotifier {
   Completer<void>? _ready;
   bool _disposed = false;
   bool commandBusy = false;
+  int _manualCommands = 0;
+  int _manualGeneration = 0;
+  bool manualStopping = false;
+  bool _slopePumping = false;
+  _DeferredSlope? _nextSlope, _activeSlope;
+  final _clientSlopeEvents = <Map<String, Object?>>[];
+  int _droppedClientSlopeEvents = 0;
+  bool get acceptingManualChanges => !commandBusy || _slopePumping;
+  num? get pendingManualPercent {
+    if (manualStopping || controlTransportUncertain || !running) return null;
+    final m = snapshot['manualControl'] as Map? ?? const {};
+    if (m['stopped'] == true ||
+        m['faulted'] == true ||
+        m['eligible'] == false) {
+      return null;
+    }
+    return _nextSlope?.percent ??
+        _activeSlope?.percent ??
+        (m['pendingManualChange'] as Map?)?['percent'] as num?;
+  }
+
+  void _clientEvent(String event, double? percent, {String? error}) {
+    _clientSlopeEvents.add({
+      'event': event,
+      'error': ?error,
+      'percent': percent,
+      'timestampUtc': DateTime.now().toUtc().toIso8601String(),
+      'sessionId': snapshot['sessionId'],
+    });
+    if (_clientSlopeEvents.length > 256) {
+      _clientSlopeEvents.removeAt(0);
+      _droppedClientSlopeEvents++;
+    }
+  }
+
+  void _cancelDeferredSlope(String reason) {
+    final pending = _nextSlope;
+    _nextSlope = null;
+    if (pending != null) {
+      _clientEvent(reason, pending.percent);
+      pending.done.complete();
+    }
+  }
+
+  Future<void> _queueSlope(
+    double percent,
+    String? sessionId,
+    bool rapidAdjustment,
+  ) {
+    if (_disposed) return Future.value();
+    _clientEvent('slope_selected', percent);
+    if (manualStopping ||
+        controlTransportUncertain ||
+        !acceptingManualChanges) {
+      _clientEvent('rejected_client_control_unavailable', percent);
+      _notify();
+      return Future.value();
+    }
+    final wanted = _DeferredSlope(
+      percent,
+      sessionId ?? snapshot['sessionId'] as String?,
+      _manualGeneration,
+      rapidAdjustment,
+    );
+    final previous = _nextSlope;
+    if (previous?.percent == 0 && percent != 0) {
+      _clientEvent('rejected_flat_pending', percent);
+      _notify();
+      return Future.value();
+    }
+    if (previous != null) {
+      _clientEvent('superseded_before_native', previous.percent);
+      previous.done.complete();
+    }
+    _nextSlope = wanted;
+    _clientEvent('queued_for_native', percent);
+    if (!_slopePumping) unawaited(_pumpSlopes());
+    _notify();
+    return wanted.done.future;
+  }
+
+  Future<void> _pumpSlopes() async {
+    _slopePumping = true;
+    try {
+      while (_nextSlope != null) {
+        final wanted = _nextSlope!;
+        _nextSlope = null;
+        if (_disposed ||
+            wanted.generation != _manualGeneration ||
+            wanted.sessionId != snapshot['sessionId'] ||
+            manualStopping ||
+            controlTransportUncertain ||
+            !running) {
+          wanted.done.complete();
+          _cancelDeferredSlope('cancelled_before_native');
+          break;
+        }
+        _activeSlope = wanted;
+        _clientEvent('dispatched_to_native', wanted.percent);
+        await _performManualAction(
+          'setManualSlope',
+          percent: wanted.percent,
+          expectedSessionId: wanted.sessionId,
+          requestedAtUtc: wanted.requestedAtUtc,
+          uiQueueMs: wanted.stopwatch.elapsedMilliseconds,
+          rapidAdjustment: wanted.rapidAdjustment,
+        );
+        _activeSlope = null;
+        wanted.done.complete();
+        final m = snapshot['manualControl'] as Map? ?? const {};
+        if (m['stopped'] == true ||
+            m['faulted'] == true ||
+            m['eligible'] == false) {
+          _cancelDeferredSlope('native_link_or_control_invalid');
+        }
+      }
+    } finally {
+      _activeSlope = null;
+      _slopePumping = false;
+      _notify();
+    }
+  }
+
   Map<String, Object?> snapshot = {'status': 'not_started', 'running': false};
+  bool get _nativeTrainingLifecycle => channel.name == 'openbkool/training';
   bool get running => snapshot['running'] == true;
+  bool get controlTransportUncertain =>
+      snapshot['controlTransportUncertain'] == true;
 
   void _notify() {
+    snapshot = {
+      ...snapshot,
+      'clientPendingManualPercent': pendingManualPercent,
+      'clientManualChanges': List.of(_clientSlopeEvents),
+      'droppedClientManualChanges': _droppedClientSlopeEvents,
+    };
     if (!_disposed) notifyListeners();
   }
 
   void _update(dynamic value) {
-    snapshot = Map<String, Object?>.from(value as Map);
+    final incoming = Map<String, Object?>.from(value as Map);
+    final sequence = incoming['reportSequence'];
+    final currentSequence = snapshot['reportSequence'];
+    // EventChannel and MethodChannel can deliver snapshots in different order.
+    // Never let an older RX snapshot roll back an accepted manual command.
+    final sameConnection =
+        incoming['connectionId'] != null &&
+        incoming['connectionId'] == snapshot['connectionId'];
+    final sameSession =
+        incoming['sessionId'] != null &&
+        incoming['sessionId'] == snapshot['sessionId'];
+    if ((sameConnection || sameSession) &&
+        sequence is num &&
+        currentSequence is num &&
+        sequence < currentSequence) {
+      return;
+    }
+    if (!sameSession ||
+        incoming['running'] == false ||
+        (incoming['manualControl'] as Map?)?['stopped'] == true) {
+      _cancelDeferredSlope('session_changed_or_closed');
+    }
+    snapshot = {
+      ...incoming,
+      if (sameSession && controlTransportUncertain)
+        'controlTransportUncertain': true,
+    };
     if (_ready != null && !_ready!.isCompleted) _ready!.complete();
     _notify();
   }
@@ -34,17 +208,46 @@ class AntTrainerSearchController extends ChangeNotifier {
         _update,
         onError: (Object error) {
           if (!_ready!.isCompleted) _ready!.completeError(error);
-          snapshot = {...snapshot, 'clientError': error.toString()};
+          snapshot = {
+            ...snapshot,
+            'clientError': error.toString(),
+            'controlTransportUncertain': true,
+          };
           _notify();
-          if (running) unawaited(stop());
+          if (running && !_nativeTrainingLifecycle) unawaited(stop());
         },
       );
     }
     return _ready!.future.timeout(const Duration(seconds: 4));
   }
 
-  Future<void> start(String mode) async {
+  Future<void> attachToTraining() async {
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      await _listen();
+    }
+  }
+
+  Future<void> refreshTraining() async {
+    if (commandBusy) return;
+    final before = snapshot;
+    try {
+      final report = await channel.invokeMapMethod<String, dynamic>('snapshot');
+      if (!_disposed && identical(before, snapshot) && report != null) {
+        _update(report);
+      }
+    } on PlatformException {
+      // The event stream can still provide the next live report.
+    } on MissingPluginException {
+      // Native training is available on Android.
+    }
+  }
+
+  Future<List<Map<Object?, Object?>>> spinningCatalog() async => (await channel
+      .invokeListMethod<Map<Object?, Object?>>('spinningCatalog'))!;
+
+  Future<void> start(String mode, {Map<String, Object?>? device}) async {
     if (running || commandBusy) return;
+    var generation = _manualGeneration;
     commandBusy = true;
     _notify();
     try {
@@ -54,34 +257,103 @@ class AntTrainerSearchController extends ChangeNotifier {
         );
       }
       await _listen();
+      if (_disposed || running || generation != _manualGeneration) return;
+      final training = _nativeTrainingLifecycle;
+      final reusingPresentLink =
+          training &&
+          snapshot['antConnectionState'] == 'present' &&
+          snapshot['connectionOnly'] == true &&
+          snapshot['trainingServiceActive'] == true;
+      generation = ++_manualGeneration;
+      _cancelDeferredSlope("new_session");
+      _clientSlopeEvents.clear();
+      _droppedClientSlopeEvents = 0;
       snapshot = {
         ...snapshot,
+        if (training) ...{
+          'sessionId': null,
+          'workoutMode': mode.startsWith('spinning:') ? 'spinning' : null,
+          'spinning': null,
+          if (!reusingPresentLink) 'reportSequence': null,
+          'identificationTiming': null,
+          'transmissionDiagnostics': null,
+          'radioCaptureCorrelation': null,
+          'controlTransportUncertain': false,
+          'manualControl': <String, Object?>{
+            'enabled': false,
+            'eligible': false,
+            'unavailableReason': 'starting',
+          },
+          'manualControlEvents': <Object?>[],
+          'channelIdentity': null,
+          'startedAt': null,
+          'updatedAt': null,
+          'events': <Object?>[],
+          'messages': <Object?>[],
+          'operationEvents': <Object?>[],
+          'csvError': null,
+          'telemetry': null,
+          'warmupElapsedMs': null,
+          'trainingElapsedMs': null,
+          'virtualElevation': null,
+          'devices': <Object?>[],
+          'connectionState': 'waiting_for_identity',
+          'channelMode': 'dedicated_bidirectional_manual',
+          'selectedDevice': device,
+          'csvFile': null,
+        },
+        'mode': mode,
         'status': 'starting',
-        'running': true,
+        'running': mode != 'training_connection_check',
+        if (training) ...{
+          'antConnectionState': reusingPresentLink ? 'present' : 'connecting',
+          'connectionOnly': mode == 'training_connection_check',
+          'connectionActionId': null,
+        },
         'clientError': null,
+        'clientErrorCode': null,
         'resourcesReleased': null,
       };
       _notify();
-      await channel.invokeMethod<void>('start', {'mode': mode});
+      await channel.invokeMethod<void>('start', {
+        'mode': mode,
+        'device': ?device,
+      });
     } catch (error) {
+      if (generation != _manualGeneration) return;
+      final code = error is PlatformException ? error.code : null;
+      final cancelled = code == 'training_start_cancelled';
       snapshot = {
         ...snapshot,
-        'status': 'start_error',
+        'mode': mode,
+        'status': cancelled ? 'user_finish' : 'start_error',
+        if (_nativeTrainingLifecycle)
+          'antConnectionState': cancelled ? 'disconnected' : 'error',
         'running': false,
-        'clientError': error.toString(),
+        'clientError': cancelled ? null : error.toString(),
+        'clientErrorCode': cancelled ? null : code,
+        if (error is PlatformException && error.details is Map)
+          ...Map<String, Object?>.from(error.details as Map),
       };
     } finally {
-      commandBusy = false;
+      commandBusy = manualStopping || _manualCommands > 0;
       _notify();
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop({String reason = 'user_finish', String? expectedId}) async {
+    if (manualStopping) return;
+    manualStopping = true;
+    _manualGeneration++;
+    _cancelDeferredSlope(reason);
     commandBusy = true;
     _notify();
     try {
       final report = await channel
-          .invokeMapMethod<String, dynamic>('stop')
+          .invokeMapMethod<String, dynamic>('stop', {
+            'reason': reason,
+            'expectedId': ?expectedId,
+          })
           .timeout(const Duration(seconds: 20));
       if (report != null) _update(report);
     } catch (error) {
@@ -89,10 +361,88 @@ class AntTrainerSearchController extends ChangeNotifier {
       snapshot = {
         ...snapshot,
         'clientError': 'No se pudo confirmar el cierre: $error',
+        'controlTransportUncertain': true,
         'resourcesReleased': null,
       };
     } finally {
-      commandBusy = false;
+      manualStopping = false;
+      commandBusy = manualStopping || _manualCommands > 0;
+      _notify();
+    }
+  }
+
+  Future<String?> exportCsv(String sessionId) =>
+      channel.invokeMethod<String>('exportCsv', {'sessionId': sessionId});
+
+  Future<Map<String, Object?>?> exportJson(
+    String sessionId, {
+    required bool finalized,
+  }) async {
+    final clientEvents = _clientSlopeEvents
+        .where((event) => event['sessionId'] == sessionId)
+        .toList();
+    final dropped = snapshot['sessionId'] == sessionId
+        ? _droppedClientSlopeEvents
+        : null;
+    final report = await channel.invokeMapMethod<String, Object?>(
+      'exportJson',
+      {'sessionId': sessionId, 'final': finalized},
+    );
+    if (report == null || report['sessionId'] != sessionId) return null;
+    return {
+      ...report,
+      'clientManualChanges': clientEvents,
+      'droppedClientManualChanges': ?dropped,
+    };
+  }
+
+  Future<void> activateControl(String sessionId) =>
+      _performManualAction('activateControl', expectedSessionId: sessionId);
+
+  Future<void> requestSlope(
+    double percent, {
+    required String? sessionId,
+    bool rapidAdjustment = false,
+  }) => _queueSlope(percent, sessionId, rapidAdjustment);
+
+  Future<void> _performManualAction(
+    String method, {
+    double? percent,
+    String? requestedAtUtc,
+    int? uiQueueMs,
+    bool rapidAdjustment = false,
+    String? expectedSessionId,
+  }) async {
+    if (controlTransportUncertain || commandBusy || manualStopping) return;
+    final generation = _manualGeneration;
+    _manualCommands++;
+    commandBusy = true;
+    _notify();
+    try {
+      final report = await channel
+          .invokeMapMethod<String, dynamic>(method, {
+            'sessionId': expectedSessionId ?? snapshot['sessionId'],
+            'percent': ?percent,
+            'requestedAtUtc': ?requestedAtUtc,
+            'uiQueueMs': ?uiQueueMs,
+            if (rapidAdjustment) 'rapidAdjustment': true,
+          })
+          .timeout(const Duration(seconds: 20));
+      if (report != null && generation == _manualGeneration) _update(report);
+    } catch (error) {
+      if (generation == _manualGeneration) {
+        _clientEvent('platform_error', percent, error: error.toString());
+        snapshot = {
+          ...snapshot,
+          'clientError': percent == 0
+              ? 'LLANO no se pudo confirmar en la API ANT · $error'
+              : 'Control manual: $error',
+          'controlTransportUncertain': true,
+        };
+      }
+    } finally {
+      _manualCommands--;
+      commandBusy = manualStopping || _manualCommands > 0;
       _notify();
     }
   }
@@ -100,7 +450,9 @@ class AntTrainerSearchController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
-    if (running) unawaited(stop());
+    if (running && !_nativeTrainingLifecycle) {
+      unawaited(stop(reason: 'controller_disposed'));
+    }
     unawaited(_subscription?.cancel());
     super.dispose();
   }

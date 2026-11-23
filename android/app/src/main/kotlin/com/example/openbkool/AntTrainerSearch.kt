@@ -36,48 +36,169 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.RejectedExecutionException
 
-/** Solo recepción V1 y suscripciones informativas FE-C. Sin páginas de control. */
-class AntTrainerSearch(context: Context, private val training: Boolean = false,
-    private val onRunningChanged: (Boolean) -> Unit = {}) : EventChannel.StreamHandler {
+internal fun connectionCheckOutcome(link: ManualControlLink): String? {
+    if (!link.channelOpen || !link.radioAvailable || !link.sessionActive ||
+        !link.identityVerified || !link.activeIdentityMatches ||
+        link.signalAgeMs?.let { it in 0 until 3000 } != true ||
+        link.manufacturer == null || link.model == null) return null
+    return if (link.manufacturer == 67 && link.model == 22) "check_verified" else "check_wrong_model"
+}
+
+internal fun antPresenceState(channelUsable: Boolean, signalAgeMs: Long?, previouslyPresent: Boolean,
+    interrupted: Boolean, finished: Boolean): String = when {
+    finished -> "disconnected"
+    !interrupted && channelUsable && signalAgeMs != null && signalAgeMs in 0 until 3000 -> "present"
+    previouslyPresent || interrupted -> "error"
+    else -> "connecting"
+}
+
+/** Diagnóstico RX y entrenamiento V1; control manual solo tras activación explícita por sesión. */
+class AntTrainerSearch(context: Context, private val training: Boolean = false, private val trainingOwner: TrainingService? = null) : EventChannel.StreamHandler {
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private var sink: EventChannel.EventSink? = null
     @Volatile private var active: Session? = null
     @Volatile private var latest: Map<String, Any?> = mapOf("status" to "not_started", "running" to false)
 
+    @Volatile private var lastFinished: Map<String, Any?>? = null
+
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
         sink = events
-        events.success(latest)
+        events.success(snapshot())
     }
-    override fun onCancel(arguments: Any?) { sink = null; stop() }
+    override fun onCancel(arguments: Any?) {
+        sink = null
+        if (!training) stop(reason = "event_stream_closed")
+    }
     fun snapshot(): Map<String, Any?> = latest
+    internal fun hasActiveSession() = active != null
+    internal fun logLifecycle(entry: Map<String, Any?>) {
+        val session = active ?: return
+        session.submit { session.recordLifecycle(entry) }
+    }
+    internal fun screenChanged(off: Boolean) {
+        val session = active ?: return
+        session.submit { session.screenChanged(off) }
+    }
 
-    fun start(mode: String, result: MethodChannel.Result) {
-        if (mode !in (if (training) listOf("training") else listOf("sequential", "fec", "bkool_v1"))) {
+    internal fun start(mode: String, result: MethodChannel.Result, selected: Map<*, *>? = null,
+        lifecycle: List<Map<String, Any?>> = emptyList(), screenOff: Boolean = false, program: SpinningProgram? = null) {
+        if (mode !in (if (training) listOf("training_connected", "training_connection_check") else listOf("sequential", "fec", "bkool_v1"))) {
             result.error("invalid_mode", "Protocolo no implementado", null); return
         }
         if (active != null) { result.error("ant_busy", "Espera a que finalice la búsqueda anterior", null); return }
-        val session = Session(mode)
+        if (training && selected == null) {
+            result.error("invalid_target", "Selecciona explícitamente un rodillo antes de conectar", null); return
+        }
+        val target = parseTarget(selected, result) ?: return
+        val session = Session(mode, target, program)
         if (!AntRadioCoordinator.acquire(session)) {
             session.worker.shutdown()
             result.error("ant_busy", "Otra operación ANT está usando la radio", null); return
         }
         active = session
-        session.submit { session.begin() }
+        session.submit { session.begin(lifecycle, screenOff) }
         result.success(mapOf("accepted" to true))
     }
 
-    fun stop(result: MethodChannel.Result? = null) {
+    private fun parseTarget(selected: Map<*, *>?, result: MethodChannel.Result): AntTrainerIdentity? {
+        return try {
+            if (selected == null) AntTrainerIdentity(30064, 112, 5) else {
+                require(selected["protocol"] == "BKOOL_V1_PUBLIC") { "Solo BKOOL_V1_PUBLIC" }
+                fun integer(key: String): Int {
+                    val value = selected[key]
+                    require(value is Int) { "Identificador entero requerido: $key" }
+                    return value
+                }
+                AntTrainerIdentity(integer("deviceNumber"), integer("deviceType"), integer("transmissionType"))
+            }
+        } catch (error: Exception) { result.error("invalid_target", error.message, null); null }
+    }
+
+    internal fun reuse(selected: Map<*, *>?, checkOnly: Boolean, program: SpinningProgram?, result: MethodChannel.Result,
+        isStartCancelled: () -> Boolean, restart: (Boolean) -> Unit) {
+        if (selected == null) {
+            result.error("invalid_target", "Selecciona un rodillo", null); return
+        }
+        val target = parseTarget(selected, result) ?: return
+        val connection = active
+        if (connection == null) {
+            restart(true); return
+        }
+        try {
+            connection.worker.execute { connection.reuse(target, checkOnly, program, result, isStartCancelled, restart) }
+        } catch (_: RejectedExecutionException) {
+            restart(true)
+        }
+    }
+
+    internal fun stopConnectionOrWorkout(result: MethodChannel.Result?, reason: String,
+        lifecycle: Map<String, Any?>, connectionOnly: Boolean, expectedId: String?, disconnect: Boolean) {
+        val connection = active
+        if (connection == null) { result?.success(latest); return }
+        synchronized(connection) {
+            if (!TrainingServicePolicy.acceptsConnectionAction(
+                    connection.checkOnly, connectionOnly, connection.actionId, expectedId)) {
+                result?.success(latest); return
+            }
+            stop(result, reason, lifecycle, keepConnection = !connectionOnly && !disconnect)
+        }
+    }
+
+    fun stop(result: MethodChannel.Result? = null, reason: String = "stopped", lifecycle: Map<String, Any?>? = null, keepConnection: Boolean = false) {
         val session = active
         if (session == null) { result?.success(latest); return }
-        session.cancelled = true
+        session.requestStop(reason, keepConnection)
         try {
-            session.worker.execute { session.finish("stopped"); result?.success(latest) }
+            session.worker.execute {
+                lifecycle?.let(session::recordLifecycle)
+                session.end(reason, result, keepConnection)
+            }
         } catch (_: RejectedExecutionException) { result?.success(latest) }
     }
-    fun exportCsv(result: MethodChannel.Result) {
-        if (active != null) { result.error("training_active", "Finaliza el entrenamiento antes de exportar", null); return }
-        val name = latest["csvFile"] as? String
+    fun manualAction(method: String, sessionId: String?, percent: Double?,
+        result: MethodChannel.Result, requestedAtUtc: String?, rapidAdjustment: Boolean, uiQueueMs: Long?) {
+        val requestedAt = android.os.SystemClock.elapsedRealtime()
+        val session = active
+        if (!training || session == null) { result.error("not_connected", "No hay entrenamiento activo", null); return }
+        if (session.checkOnly) { result.error("read_only_check", "Comprobación ANT sin control", null); return }
+        if (session.id != sessionId) { result.error("stale_session", "La sesión ha cambiado; vuelve a conectar", null); return }
+        val fence = session.commandFence
+        if (!fence.tryEnqueue()) { result.error("command_busy", "Ya hay una orden en curso", null); return }
+        val manualChange = method == "setManualSlope"
+        if (manualChange) session.waitingManualChanges.incrementAndGet()
+        try { session.worker.execute {
+            if (manualChange) session.waitingManualChanges.decrementAndGet()
+            val cancelled = fence.dequeue()
+            if (session.id != sessionId || session.checkOnly) result.error("stale_session", "La sesión ha cambiado", null)
+            else if (cancelled != null) session.rejectPending(method, percent, cancelled, result)
+            else session.manualAction(method, percent, result, requestedAt, requestedAtUtc, rapidAdjustment, uiQueueMs)
+        } } catch (_: RejectedExecutionException) {
+            fence.dequeue()
+            if (manualChange) session.waitingManualChanges.decrementAndGet()
+            result.error("session_closed", "Sesión cerrada", null)
+        }
+    }
+    private fun finalReport(sessionId: String?): Map<String, Any?>? =
+        lastFinished?.takeIf { sessionId == null || it["sessionId"] == sessionId }
+            ?: trainingOwner?.workoutReport(sessionId)
+
+    fun exportJson(sessionId: String?, finalized: Boolean, result: MethodChannel.Result) {
+        val report = if (finalized) finalReport(sessionId) else latest
+        if (report == null || report["sessionId"] == null || (sessionId != null && report["sessionId"] != sessionId)) {
+            result.error("report_unavailable", "El registro de esa sesión no está disponible", null)
+            return
+        }
+        result.success(report + mapOf("capturedAt" to now()))
+    }
+
+    fun exportCsv(sessionId: String?, result: MethodChannel.Result) {
+        val report = finalReport(sessionId)
+        if (report == null || (sessionId != null && report["sessionId"] != sessionId)) {
+            result.error("report_unavailable", "El CSV final de esa sesión no está disponible", null)
+            return
+        }
+        val name = report["csvFile"] as? String
         if (name == null) { result.error("no_csv", "No hay registro CSV", null); return }
         Thread {
             try {
@@ -86,40 +207,224 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             } catch (error: Exception) { main.post { result.error("csv_error", error.message, null) } }
         }.start()
     }
-    fun dispose() { stop(); sink = null }
+    fun dispose() { stop(reason = "engine_disposed"); sink = null }
 
-    private inner class Session(val mode: String) : ServiceConnection {
+    private inner class Session(val mode: String, val target: AntTrainerIdentity, program: SpinningProgram?) : ServiceConnection {
         val worker = AntSerialWorker()
+        @Volatile var commandFence = ManualCommandFence()
+        private val captureAnchorMs = android.os.SystemClock.elapsedRealtime()
+        private val captureAnchorUtcMs = System.currentTimeMillis()
+        fun requestStop(reason: String, keepConnection: Boolean) {
+            synchronized(this) {
+                cancelled = true
+                if (!keepConnection) retainAfterStop = false
+                invalidateTargets(reason)
+            }
+        }
+
+        fun invalidateTargets(reason: String) {
+            commandFence.cancel(reason)
+            manual.invalidateTargets(reason)
+            main.removeCallbacks(trainingTick)
+        }
+        private val transmissionAudit = AntTransmissionAudit(android.os.SystemClock::elapsedRealtime)
         @Volatile var cancelled = false
         @Volatile private var finished = false
         @Volatile private var generation = 0
         private var stage = "starting"
         private var status = "running"
-        private val startedAt = now()
-        private val telemetry = if (training) BkoolTelemetry(android.os.SystemClock.elapsedRealtime()) else null
+        private var reportSequence = 0L
+        private var startedAt = now()
+        private val identificationTiming = AntIdentificationTiming(android.os.SystemClock::elapsedRealtime, target) {
+            val type = if (it["milestone"] == "manufacturer_model_wait_long") "identification_wait" else "identification_milestone"
+            event(type, "${it["milestone"]}: ${it["elapsedMs"]} ms", details = it)
+        }
+        private val connectionId = java.util.UUID.randomUUID().toString()
+        @Volatile var id = if (training && mode == "training_connected") java.util.UUID.randomUUID().toString() else connectionId
+            private set
+        val actionId get() = if (checkOnly) connectionId else id
+        private var restartAfterClose: ((Boolean) -> Unit)? = null
+        @Volatile private var retainAfterStop = false
+        private var presenceSinceMs: Long? = null
+        private var workoutFinal = false
+        private var stopping = false
+        @Volatile private var radioDead = false
+        private var linkInterrupted = false
+        private val stopReplies = mutableListOf<MethodChannel.Result>()
+        val waitingManualChanges = java.util.concurrent.atomic.AtomicInteger(0)
+        private var virtualElevation = if (training && mode == "training_connected") VirtualElevation() else null
+        private val manualEvents = ArrayDeque<Map<String, Any?>>()
+        private var droppedManualEvents = 0
+        private var stopDrainUntilMs = 0L
+        private var finalClose: Runnable? = null
+        @Volatile private var manual = newManualControl()
+        private fun newManualControl(): ManualAntControl = ManualAntControl(target, android.os.SystemClock::elapsedRealtime,
+            ::manualLink, { payload, zero ->
+                if (!zero && (cancelled || trainingOwner?.failure() != null)) throw ManualCommandCancelledException()
+                check(!finished && !radioDead && transmissionAudit.channelUsable &&
+                    (if (zero) manualLink().stopReason(target) else manualLink().reason(target)) == null) { "Canal o señal no disponibles" }
+                val selectedChannel = checkNotNull(channel) { "Canal cerrado" }
+                manual.recordApiEntry()
+                selectedChannel.setBroadcastData(payload)
+            }, { e ->
+                if (e["event"] == "enabled" && training && warmupElapsedMs == null) {
+                    warmupElapsedMs = (e.getValue("monotonicMs") as Long) - sessionStartedMs
+                }
+                if (e["event"] == "api_returned" && e["periodicRefresh"] != true && e["stopRequest"] != true) {
+                    (e["requestedPercent"] as? Double)?.let { virtualElevation?.accepted(it) }
+                }
+                if (e["event"] == "stop_requested" && warmupElapsedMs != null && trainingEndedMs == null) {
+                    trainingEndedMs = e.getValue("monotonicMs") as Long
+                }
+                if (e["event"] == "stop_requested" || e["event"] == "api_error") virtualElevation?.unavailable()
+                val entry = e + mapOf("timestamp" to now(), "sessionId" to id)
+                if (manualEvents.size >= 2000) { manualEvents.removeFirst(); droppedManualEvents++ }
+                manualEvents.addLast(entry)
+                record("manual:${entry["event"]}", null, entry)
+                schedulePublish()
+            },
+                manualPriorityWaiting = { waitingManualChanges.get() > 0 }, describeError = ::antErrorDetails)
+        private fun manualLink(): ManualControlLink {
+            val t = linkTelemetry?.snapshot(android.os.SystemClock.elapsedRealtime())
+            val device = devices.values.firstOrNull { it["deviceNumber"] == target.number && it["deviceType"] == target.type && it["transmissionType"] == target.transmission }
+            return ManualControlLink(dedicated,
+                identityVerified, device?.get("manufacturerId") as? Int, device?.get("modelNumber") as? Int,
+                t?.get("signalAgeMs") as? Long,
+                t?.get("speedKmh") != null && t["powerW"] != null && t["cadenceRpm"] != null,
+                channelOpen = opened, radioAvailable = !radioDead && !linkInterrupted, sessionActive = !finished,
+                activeIdentityMatches = channelIdentitiesMatch(target, configuredChannelId, adapterChannelId, receivedChannelId))
+        }
+        @Volatile var checkOnly = mode == "training_connection_check"
+            private set
+        private val dedicated = mode == "training_connected" || checkOnly
+        private var identityVerified = false
+        private var configuredChannelId: Map<String, Any?>? = null
+        private var adapterChannelId: Map<String, Any?>? = null
+        private var receivedChannelId: Map<String, Any?>? = null
+        private var identityReadbackError: Map<String, Any?>? = null
+        private var lastManualAvailability: String? = null
+        private var sessionStartedMs = android.os.SystemClock.elapsedRealtime()
+        private var warmupElapsedMs: Long? = null
+        private var spinning = program?.let(::SpinningProgress)
+        private var finishReason: String? = null
+        private fun effectiveElapsed(now: Long) = warmupElapsedMs?.let {
+            ((trainingEndedMs ?: now) - sessionStartedMs - it).coerceAtLeast(0)
+        }
+        private var trainingEndedMs: Long? = null
+        private val linkTelemetry = if (training) BkoolTelemetry(sessionStartedMs, target) else null
+        private var telemetry = if (training && !checkOnly) BkoolTelemetry(sessionStartedMs, target) else null
         private var csvFile: String? = null
         private var csv: java.io.BufferedWriter? = null
         private var csvError: String? = null
         private var lastSignal: String? = null
-        private val heartbeat = Runnable { submit {
-            if (!finished && !cancelled && opened) {
-                val signal = telemetry!!.signal(android.os.SystemClock.elapsedRealtime())
-                if (signal != lastSignal) { event("signal", signal); lastSignal = signal; record("signal:$signal", null) }
-                try { csv?.flush() } catch (error: Exception) { csvFailure(error) }
-                if (signal == "disconnected") finish("disconnected") else { publish(); main.postDelayed(heartbeatTask(), 1000) }
+        private var nextSupervisionAt = 0L
+        private val trainingTick = Runnable { submit {
+            if (finished || cancelled || !opened) return@submit
+            trainingOwner?.failure()?.let { stopForServiceFailure(it); return@submit }
+            if (!checkOnly) {
+                manual.supervise()
+                if (handleControlAbort()) return@submit
             }
+            val now = android.os.SystemClock.elapsedRealtime()
+            if (!checkOnly && !advanceSpinning(now)) return@submit
+            val superviseLink = now >= nextSupervisionAt
+            if (superviseLink) {
+                nextSupervisionAt = now + 1000
+                if (!checkOnly) manual.refreshTarget()
+            } else if (!checkOnly) {
+                manual.flushPending()
+            }
+            trainingOwner?.failure()?.let { stopForServiceFailure(it); return@submit }
+            if (manual.snapshot()["faulted"] == true) { finish("manual_api_error"); return@submit }
+            if (superviseLink) {
+                val signal = linkTelemetry!!.signal(now)
+                if (signal == "signal_lost") linkInterrupted = true
+                if (checkOnly && trainingOwner?.idleExpired(now, presenceSinceMs) == true) {
+                    finish("connection_idle_timeout"); return@submit
+                }
+                if (signal != lastSignal) {
+                    event("signal", signal)
+                    lastSignal = signal
+                    record("signal:$signal", null)
+                }
+                try { csv?.flush() } catch (error: Exception) { csvFailure(error) }
+                if (signal == "disconnected" || (linkInterrupted && signal == "receiving")) {
+                    finish("disconnected"); return@submit
+                }
+            }
+            publish()
+            scheduleTrainingTick()
         } }
-        private fun heartbeatTask(): Runnable = heartbeat
+
+        private fun advanceSpinning(now: Long): Boolean {
+            val progress = spinning ?: return true
+            if (cancelled) return false
+            if (warmupElapsedMs == null && manualLink().reason(target) == null) manual.enable()
+            val elapsed = effectiveElapsed(now) ?: return true
+            if (elapsed >= progress.program.durationMs) {
+                finish("program_completed")
+                return false
+            }
+            val grade = progress.advance(elapsed) ?: return true
+            record("slope_selection", null, mapOf("selectedPercent" to grade, "source" to "spinning",
+                "programId" to progress.program.id, "intervalIndex" to progress.index))
+            manual.request(grade)
+            return true
+        }
+
+        private fun scheduleTrainingTick() {
+            main.removeCallbacks(trainingTick)
+            if (finished || cancelled || !opened) return
+            val supervisionDelay = (nextSupervisionAt - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0)
+            val programDelay = spinning.takeUnless { checkOnly }?.nextBoundary()?.let { boundary ->
+                effectiveElapsed(android.os.SystemClock.elapsedRealtime())?.let { (boundary - it).coerceAtLeast(0) }
+            }
+            val delay = minOf(supervisionDelay, manual.nextManualDelayMs() ?: supervisionDelay,
+                programDelay ?: supervisionDelay)
+            main.postDelayed(trainingTick, delay)
+            if (finished || cancelled) main.removeCallbacks(trainingTick)
+        }
+        // Metric dropout revokes the authorization for this connection. The existing
+        // single zero and drain are reused, while RX supervision stays alive.
+        private fun handleControlAbort(result: MethodChannel.Result? = null): Boolean {
+            val failure = manual.abortReason() ?: return false
+            if (spinning != null || failure != "link_lost:telemetry_not_fresh") {
+                end(failure, result)
+                return true
+            }
+            val zeroQueued = manual.suspendForMissingTelemetry()
+            if (zeroQueued) stopDrainUntilMs = android.os.SystemClock.elapsedRealtime() + ManualAntControl.DRAIN_MS
+            event("control_suspended", "Telemetría parcial; control suspendido. Solicitud 0 % a API=$zeroQueued")
+            return false
+        }
         private fun csvFailure(error: Exception) {
             csvError = error.toString()
             runCatching { csv?.close() }; csv = null
             event("csv_error", "Registro CSV interrumpido: $error")
         }
-        private fun record(kind: String, payload: ByteArray?) {
+        private var isScreenOff = false
+        private var screenOffFrames = 0L
+        fun screenChanged(off: Boolean) {
+            if (finished || off == isScreenOff) return
+            if (off) screenOffFrames = 0
+            isScreenOff = off
+            recordLifecycle(mapOf("event" to if (off) "screen_off" else "screen_on",
+                "decision" to "continue_training", "antFramesWhileOff" to screenOffFrames,
+                "monotonicMs" to android.os.SystemClock.elapsedRealtime()))
+        }
+        private fun stopForServiceFailure(reason: String, result: MethodChannel.Result? = null) {
+            recordLifecycle(mapOf("event" to "training_service_lost", "decision" to "stop", "reason" to reason))
+            end(reason, result)
+        }
+        fun recordLifecycle(entry: Map<String, Any?>) {
+            event("android_lifecycle", entry["event"].toString(), details = entry)
+            record("android:${entry["event"]}", null, entry)
+        }
+        private fun record(kind: String, payload: ByteArray?, details: Map<String, Any?>? = null) {
             val t = telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()) ?: return
-            try { csv?.write(csvRow(listOf(now(), t["elapsedMs"], kind, "BKOOL_V1_PUBLIC", 30064, 112, 5,
+            try { csv?.write(csvRow(listOf(now(), t["elapsedMs"], kind, "BKOOL_V1_PUBLIC", target.number, target.type, target.transmission,
                 payload?.let { hex(it) }, t["speedKmh"], t["powerW"], t["cadenceRpm"], t["distanceM"],
-                t["signal"], t["distancePartial"], t["speedAgeMs"], t["powerAgeMs"]))) }
+                t["signal"], t["distancePartial"], t["speedAgeMs"], t["powerAgeMs"], details?.let { org.json.JSONObject(it).toString() }, id))) }
             catch (error: Exception) { csvFailure(error) }
         }
         private val devices = linkedMapOf<String, MutableMap<String, Any?>>()
@@ -162,30 +467,141 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         private fun callback(token: Int, block: () -> Unit) = submit {
             if (!finished && !cancelled && generation == token) {
                 try { block() }
-                catch (_: java.util.concurrent.CancellationException) { finish("stopped") }
+                catch (_: java.util.concurrent.CancellationException) { if (!cancelled) finish("stopped") }
                 catch (error: Exception) { fail("callback", error) }
             }
         }
-        fun begin() {
-            if (cancelled) { finish("stopped"); return }
-            event("search_start", "Búsqueda $mode. Solo recepción e información; Bkool V2 desactivado.")
-            if (training) {
-                try {
-                    val file = java.io.File.createTempFile("training_", ".csv", context.filesDir)
-                    csvFile = file.name; csv = file.bufferedWriter()
-                    csv!!.write(csvRow(listOf("timestamp_utc", "elapsed_ms", "event", "protocol", "device_id", "device_type", "transmission_type",
-                        "payload_hex", "speed_kmh", "power_w", "cadence_rpm", "distance_m", "signal", "distance_partial", "speed_age_ms", "power_age_ms")))
-                } catch (error: Exception) { csvFailure(error); finish("error"); return }
+        fun rejectPending(method: String, percent: Double?, reason: String, result: MethodChannel.Result) {
+            event("command_cancelled", "Orden en cola cancelada: $reason", details = mapOf(
+                "method" to method, "requestedPercent" to percent, "reason" to reason, "apiCalled" to false))
+            publish()
+            result.error("command_cancelled", "Orden cancelada por parada: $reason", null)
+        }
+        fun manualAction(method: String, percent: Double?, result: MethodChannel.Result,
+            requestedAt: Long, requestedAtUtc: String?, rapidAdjustment: Boolean, uiQueueMs: Long?) {
+            if (finished || stopping || cancelled) {
+                result.error("session_stopping", "La sesión está cerrándose", null); return
             }
+            trainingOwner?.failure()?.let { stopForServiceFailure(it, result); return }
+            if (spinning != null) {
+                result.error("automatic_training", "Spinning gestiona las consignas de pendiente", null)
+                return
+            }
+            when (method) {
+                "activateControl" -> manual.enable()
+                "setManualSlope" -> {
+                    if (percent == null) { result.error("invalid_slope", "Pendiente numérica requerida", null); return }
+                    record("slope_selection", null, mapOf("selectedPercent" to percent.takeIf { it.isFinite() },
+                        "requestedAtMs" to requestedAt, "requestedAtUtc" to requestedAtUtc))
+                    manual.request(percent, requestedAt, requestedAtUtc, rapidAdjustment, uiQueueMs)
+                    scheduleTrainingTick()
+                }
+            }
+            trainingOwner?.failure()?.let { stopForServiceFailure(it, result); return }
+            if (handleControlAbort(result)) return
+            if (manual.snapshot()["faulted"] == true) { end("manual_api_error", result); return }
+            publish(); result.success(latest)
+        }
+        fun begin(lifecycle: List<Map<String, Any?>>, screenOff: Boolean) {
+            event("search_start", "Búsqueda $mode. Solo recepción e información; Bkool V2 desactivado.")
+            if (training && !checkOnly && !openWorkoutLog()) return
+            lifecycle.forEach(::recordLifecycle)
+            if (screenOff) screenChanged(true)
+            if (cancelled) return
             if (training || mode == "bkool_v1") beginV1() else beginFecSearch()
         }
-        private fun event(type: String, message: String, error: Exception? = null) {
+
+        private fun openWorkoutLog(): Boolean {
+            try {
+                val file = java.io.File.createTempFile("training_", ".csv", context.filesDir)
+                csvFile = file.name
+                csv = file.bufferedWriter()
+                csv!!.write(csvRow(listOf("timestamp_utc", "elapsed_ms", "event", "protocol", "device_id", "device_type", "transmission_type",
+                    "payload_hex", "speed_kmh", "power_w", "cadence_rpm", "distance_m", "signal", "distance_partial", "speed_age_ms", "power_age_ms", "details_json", "session_id")))
+                record("session_started", null, mapOf("recordState" to "partial"))
+            } catch (error: Exception) {
+                csvFailure(error)
+                finish("error")
+                return false
+            }
+            return true
+        }
+
+        private fun presence(now: Long) = antPresenceState(
+            channelUsable = opened && transmissionAudit.channelUsable && !radioDead,
+            // Only frames accepted against the configured target update the RX timestamp.
+            signalAgeMs = linkTelemetry?.lastReceivedMs?.let { now - it },
+            previouslyPresent = presenceSinceMs != null,
+            interrupted = linkInterrupted || radioDead,
+            finished = finished,
+        )
+
+        fun reuse(requested: AntTrainerIdentity, readOnly: Boolean, program: SpinningProgram?, result: MethodChannel.Result,
+            isStartCancelled: () -> Boolean, restart: (Boolean) -> Unit) {
+            val replace = TrainingServicePolicy.replaceConnection(
+                sameTarget = requested == target,
+                presence = presence(android.os.SystemClock.elapsedRealtime()),
+            )
+            synchronized(this) {
+                if (isStartCancelled()) {
+                    result.error("training_start_cancelled", "Entrenamiento sin iniciar", null)
+                    return
+                }
+                if (finished || stopping || cancelled || !checkOnly) {
+                    result.error("ant_busy", "Ya hay una operación ANT en curso o cerrándose", null)
+                    return
+                }
+                if (replace) {
+                    restartAfterClose = restart
+                    cancelled = true
+                } else if (!readOnly) {
+                    id = java.util.UUID.randomUUID().toString()
+                    manual = newManualControl()
+                    commandFence = ManualCommandFence()
+                    checkOnly = false
+                }
+            }
+            if (replace) {
+                finish("connection_replaced")
+                return
+            }
+            if (!readOnly) {
+                workoutFinal = false
+                status = "running"
+                sessionStartedMs = android.os.SystemClock.elapsedRealtime()
+                startedAt = now()
+                telemetry = BkoolTelemetry(sessionStartedMs, target)
+                virtualElevation = VirtualElevation()
+                csvFile = null; csvError = null
+                warmupElapsedMs = null; trainingEndedMs = null
+                spinning = program?.let(::SpinningProgress)
+                finishReason = null
+                manualEvents.clear(); droppedManualEvents = 0
+                frames.clear(); droppedFrames = 0
+                events.clear(); droppedEvents = 0
+                lastManualAvailability = null
+                if (!openWorkoutLog()) {
+                    result.error("csv_error", "No se pudo iniciar el registro", null)
+                    return
+                }
+                recordLifecycle(mapOf("event" to "ant_connection_reused", "connectionId" to connectionId))
+            }
+            publish()
+            result.success(mapOf("accepted" to true))
+        }
+
+        private fun event(type: String, message: String, error: Exception? = null, details: Map<String, Any?>? = null) {
             if (training && events.size >= 500) { events.removeFirst(); droppedEvents++ }
             events.addLast(mapOf("timestamp" to now(), "event" to type, "stage" to stage,
-                "message" to message, "errorType" to error?.javaClass?.simpleName))
+                "sessionId" to id, "message" to message, "errorType" to error?.javaClass?.simpleName, "details" to details))
+            if (training && (error != null || type in setOf("channel_event", "channel_death",
+                "service_disconnected", "channel_identity_mismatch", "identification_wait", "command_cancelled"))) {
+                record(type, null, mapOf("message" to message, "error" to error?.message) + details.orEmpty())
+            }
             schedulePublish()
         }
         private fun fail(where: String, error: Exception) {
+            if (training && cancelled) return // The queued stop owns its reason and lifecycle row.
             phaseErrors = true
             if (stage == "bkool_v1") {
                 v1Failure = mapOf("operation" to operations.failureFor(error)?.get("operation"),
@@ -202,11 +618,76 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
         }
         private fun publish() {
             if (active !== this) return
+            val reportMs = android.os.SystemClock.elapsedRealtime()
+            val presence = if (training) presence(reportMs) else null
+            val checked = if (presence == "present") connectionCheckOutcome(manualLink()) else null
+            if (presence == "present" && presenceSinceMs == null) {
+                presenceSinceMs = reportMs
+                phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
+            }
+            val archived = lastFinished.takeIf { workoutFinal }
+            val manualState = manual.snapshot() + mapOf("pendingCommands" to commandFence.snapshot()["pendingApplicationCommands"])
+            if (training) identificationTiming.availability(manualState["eligible"] == true,
+                (manualState["blockingReasons"] as? List<*>)?.filterIsInstance<String>() ?: emptyList(), !finished && !stopping)
+            val signature = "${manualState["eligible"]}:${manualState["blockingReasons"]}"
+            if (training && lastManualAvailability != signature) {
+                lastManualAvailability = signature
+                event("manual_availability", "Control elegible=${manualState["eligible"]}; bloqueos=${manualState["blockingReasons"]}",
+                    details = mapOf("manualControl" to manualState, "selectedDevice" to target.toMap(),
+                        "configuredChannelId" to configuredChannelId, "adapterChannelId" to adapterChannelId,
+                        "receivedChannelId" to receivedChannelId, "identityReadbackError" to identityReadbackError))
+            }
             val report = mapOf(
-                "telemetry" to telemetry?.snapshot(android.os.SystemClock.elapsedRealtime()),
+                "controlDiagnosticsVersion" to 13,
+                "recordState" to if (finished || workoutFinal) "final" else "partial",
+                "backgroundPolicy" to if (training) "foreground_service" else null,
+                "trainingServiceActive" to (!finished && trainingOwner?.isOperational() == true),
+                "transmissionDiagnostics" to (transmissionAudit.snapshot() + mapOf(
+                    "lastManualOrder" to manualState["lastManualApiSuccess"],
+                    "lastStopCommand" to manualState["lastStopCommand"],
+                    "stopResult" to manualState["stopResult"], "lastApiResult" to (manualState["lastApiError"] ?: manualState["lastApiSuccess"]),
+                    "lastControllerResult" to manualState["lastResult"])),
+                "commandQueue" to commandFence.snapshot(),
+                "radioCaptureCorrelation" to mapOf("clock" to "android_elapsedRealtime_ms",
+                    "anchorMonotonicMs" to captureAnchorMs, "anchorUtcEpochMs" to captureAnchorUtcMs,
+                    "externalClockAlignment" to "required_not_automatically_verified",
+                    "apiToRfDelivery" to "unconfirmed", "txPayloadCorrelation" to "unavailable"),
+                "identificationTiming" to if (training) identificationTiming.snapshot() else null,
+                "reportSequence" to ++reportSequence,
+                "channelIdentity" to mapOf("selected" to target.toMap(), "configured" to configuredChannelId,
+                    "adapterReadback" to adapterChannelId, "lastReceived" to receivedChannelId,
+                    "allMatch" to channelIdentitiesMatch(target, configuredChannelId, adapterChannelId, receivedChannelId),
+                    "readbackError" to identityReadbackError),
+                "sessionId" to id.takeUnless { training && checkOnly && !workoutFinal }, "manualControl" to manualState, "manualControlEvents" to manualEvents.toList(), "droppedManualControlEvents" to droppedManualEvents,
+                "antLink" to when {
+                    finished || !opened -> "channel_closed"
+                    radioDead -> "radio_unavailable"
+                    linkInterrupted -> "signal_lost"
+                    else -> linkTelemetry?.signal(android.os.SystemClock.elapsedRealtime())
+                },
+                "selectedDevice" to target.toMap(),
+                "channelMode" to if (dedicated) "dedicated_bidirectional_manual" else "background_receive_only",
+                "connectionState" to if (finished) "closed" else if (checked == "check_verified") "identity_verified" else "waiting_for_identity",
+                "antConnectionState" to if (presence == "disconnected" && status !in setOf(
+                        "user_finish", "screen_closed", "cancel_check", "disconnect_trainer",
+                        "connection_idle_timeout", "connection_replaced", "task_removed", "program_completed",
+                    )) "error" else presence,
+                "antCompatibility" to checked,
+                "connectionId" to connectionId.takeIf { training },
+                "connectionActionId" to actionId,
+                "antTelemetry" to linkTelemetry?.snapshot(reportMs),
+                "connectionOnly" to (checkOnly || workoutFinal),
+                "virtualElevation" to virtualElevation?.snapshot(),
+                "telemetry" to (archived?.get("telemetry") ?: (telemetry ?: linkTelemetry)?.snapshot(
+                    if (stopping || finished || workoutFinal) trainingEndedMs ?: reportMs else reportMs)),
+                "warmupElapsedMs" to if (training && (!checkOnly || workoutFinal)) warmupElapsedMs ?: ((trainingEndedMs ?: reportMs) - sessionStartedMs) else null,
+                "trainingElapsedMs" to effectiveElapsed(reportMs),
+                "workoutMode" to if (!training || (checkOnly && !workoutFinal)) null else if (spinning != null) "spinning" else "free",
+                "finishReason" to finishReason,
+                "spinning" to spinning?.report(effectiveElapsed(reportMs) ?: 0, finishReason),
                 "csvFile" to csvFile, "csvError" to csvError,
-                "status" to status, "running" to !finished, "stage" to stage,
-                "mode" to mode, "startedAt" to startedAt, "updatedAt" to now(),
+                "status" to status, "running" to (!finished && !workoutFinal && (!training || !checkOnly)), "stage" to stage,
+                "mode" to (if (!training) mode else if (checkOnly && !workoutFinal) "training_connection_check" else "training_connected"), "startedAt" to startedAt, "updatedAt" to now(),
                 "devices" to devices.values.map { HashMap(it) }, "events" to events.toList(),
                 "messages" to frames.toList(), "droppedMessages" to droppedFrames,
                 "droppedEvents" to droppedEvents, "resourcesReleased" to resourcesReleased,
@@ -217,12 +698,23 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 "adapterCapabilities" to adapterCapabilities, "channelCapabilities" to channelCapabilities,
                 "parameters" to mapOf("fecSeconds" to 30, "fecInfoSecondsPerDevice" to 20,
                     "v1Seconds" to if (training) null else 40, "v1Network" to "PUBLIC", "v1Rf" to 40,
-                    "v1Period" to 32768, "v1ReceiveOnly" to true,
-                    "v1WildcardId" to true, "v1ExpectedType" to 112,
-                    "v1RadioTimeoutsApplied" to false),
+                    "v1Period" to 32768, "v1ReceiveOnly" to !dedicated,
+                    "v1WildcardId" to !dedicated, "v1ExpectedType" to 112,
+                    "v1RadioTimeoutsApplied" to dedicated),
             )
+            if (training && (finished || workoutFinal) && report["sessionId"] != null &&
+                lastFinished?.get("sessionId") != id) {
+                lastFinished = report
+                trainingOwner?.archiveWorkout(report)
+            }
             latest = report
-            main.post { if (latest === report) { onRunningChanged(!finished); sink?.success(report) } }
+            if (finished) active = null
+            main.post {
+                if (latest === report) {
+                    sink?.success(report)
+                    trainingOwner?.publish(report)
+                }
+            }
         }
         private fun deadline(seconds: Int, action: () -> Unit) {
             phaseDeadline?.let { main.removeCallbacks(it) }
@@ -316,7 +808,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             } catch (error: Exception) { fail("FE-C info", error) }
         }
         private fun beginV1() {
-            if (cancelled) { finish("stopped"); return }
+            if (cancelled) return
             generation++; stage = "bkool_v1"; resourcesReleased = false
             event("phase_start", "Bkool V1: PUBLIC, RF=40, período=32768, recepción en segundo plano")
             deadline(8) { phaseErrors = true; event("error", "Timeout al enlazar ANT Radio Service"); finish("error") }
@@ -346,7 +838,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     main.postDelayed({ callback(token) { configureV1(ant, token) } }, 500)
                     return
                 }
-                val caps = Capabilities().apply { supportBackgroundScanning(true) }
+                val caps = Capabilities().apply { supportBackgroundScanning(!dedicated) }
                 if (operations.run("v1.hasAdapterProviderSupport", summarize = { it }) { AntService.hasAdapterProviderSupport() }) {
                     val adapterProvider = operations.run("v1.getAdapterProvider") { ant.adapterProvider }
                     adapterCapabilities = operations.run("v1.getAdaptersInfo", summarize = { it }) {
@@ -359,34 +851,46 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     operations.skip("v1.getAdaptersInfo", "Servicio sin proveedor de adaptadores; se comprobarán las capacidades del canal reservado")
                 }
                 val matching = operations.run("v1.getNumChannelsAvailableWithCapabilities",
-                    mapOf("requiredBackgroundScanning" to true), summarize = { it }) { provider.getNumChannelsAvailable(caps) }
+                    mapOf("requiredBackgroundScanning" to !dedicated), summarize = { it }) { provider.getNumChannelsAvailable(caps) }
                 operations.run("v1.validateMatchingChannels", mapOf("matchingChannels" to matching)) {
-                    if (matching <= 0) throw UnsupportedOperationException("No hay canales disponibles con capacidad background scanning")
+                    if (matching <= 0) throw UnsupportedOperationException("No hay canales disponibles para el modo $mode")
                 }
                 val acquired = operations.run("v1.acquireChannel",
-                    mapOf("network" to "PUBLIC", "requiredBackgroundScanning" to true)) {
+                    mapOf("network" to "PUBLIC", "requiredBackgroundScanning" to !dedicated)) {
                     provider.acquireChannel(context, PredefinedNetwork.PUBLIC, caps)
                 }
                 channel = acquired
                 val actualCaps = operations.run("v1.getCapabilities", summarize = { capabilityDetails(it) }) { acquired.capabilities }
                 channelCapabilities = capabilityDetails(actualCaps)
-                if (cancelled) { finish("stopped"); return }
+                if (cancelled) return
                 operations.run("v1.setChannelEventHandler") { acquired.setChannelEventHandler(object : IAntChannelEventHandler {
-                    override fun onChannelDeath() { channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("disconnected") } }
+                    override fun onChannelDeath() { transmissionAudit.died(); invalidateTargets("channel_death"); radioDead = true; channelClosed.countDown(); callback(token) { event("channel_death", "La radio/canal V1 dejó de estar disponible"); finish("channel_death") } }
                     override fun onReceiveMessage(type: MessageFromAntType, parcel: AntMessageParcel) {
+                        val receivedAt = android.os.SystemClock.elapsedRealtime()
                         val id = parcel.messageId; val content = parcel.messageContent.copyOf()
-                        if (type == MessageFromAntType.CHANNEL_EVENT && content.size >= 3 && content[2].toInt() and 255 == 7) {
-                            channelClosed.countDown()
+                        if (type == MessageFromAntType.CHANNEL_EVENT && content.size >= 3) {
+                            val code = content[2].toInt() and 255
+                            transmissionAudit.observe(code) // Preserve even during drain/cleanup, when worker callbacks are ignored.
+                            if (code == 1 || code == 7) {
+                                radioDead = true
+                                invalidateTargets(if (code == 7) "channel_closed" else "search_timeout")
+                            }
+                            if (code == 7) channelClosed.countDown()
                         }
-                        callback(token) { receive(type.name, id, content) }
+                        callback(token) { receive(type.name, id, content, receivedAt) }
                     }
                 }) }
-                configureV1Background(object : V1BackgroundChannel {
+                val configuration = object : V1BackgroundChannel, V1DedicatedChannel {
+                    override fun assignBidirectionalSlave() { acquired.assign(ChannelType.BIDIRECTIONAL_SLAVE); assigned = true }
+                    override fun setLowPrioritySearchOnly() { acquired.setSearchTimeout(com.dsi.ant.message.LowPrioritySearchTimeout.TWENTY_FIVE_SECONDS, com.dsi.ant.message.HighPrioritySearchTimeout.DISABLED) }
                     override fun assignReceiveOnlyBackground() {
                         acquired.assign(ChannelType.SLAVE_RECEIVE_ONLY, ExtendedAssignment().apply { enableBackgroundScanning() })
                         assigned = true
                     }
-                    override fun setId(number: Int, type: Int, transmission: Int) { acquired.setChannelId(ChannelId(number, type, transmission)) }
+                    override fun setId(number: Int, type: Int, transmission: Int) {
+                        acquired.setChannelId(ChannelId(number, type, transmission))
+                        configuredChannelId = mapOf("deviceNumber" to number, "deviceType" to type, "transmissionType" to transmission)
+                    }
                     override fun setPeriod(period: Int) { acquired.setPeriod(period) }
                     override fun setRfFrequency(rf: Int) { acquired.setRfFrequency(rf) }
                     override fun enableExtendedIdentity() {
@@ -410,14 +914,32 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     }
                     override fun open() {
                         if (cancelled) throw java.util.concurrent.CancellationException("Búsqueda cancelada antes de abrir")
+                        val openStarted = android.os.SystemClock.elapsedRealtime()
                         acquired.open(); opened = true
+                        transmissionAudit.opened()
+                        if (training) identificationTiming.channelOpened(android.os.SystemClock.elapsedRealtime() - openStarted)
                     }
-                }, V1ChannelCapabilities(actualCaps.hasBackgroundScanning(), actualCaps.hasExtendedAssign(),
+                }
+                if (dedicated) configureV1Dedicated(configuration, target, actualCaps.rfFrequencyMin, actualCaps.rfFrequencyMax, operations)
+                else configureV1Background(configuration, V1ChannelCapabilities(actualCaps.hasBackgroundScanning(), actualCaps.hasExtendedAssign(),
                     actualCaps.rfFrequencyMin, actualCaps.rfFrequencyMax), operations)
-                event("v1_listening", "Escucha V1 activa; IDs extendidos habilitados, tipo esperado 112")
+                if (dedicated) {
+                    try {
+                        adapterChannelId = operations.run("connection.requestChannelId", summarize = { it }) {
+                            val value = acquired.requestChannelId().channelId
+                            mapOf("deviceNumber" to value.deviceNumber, "deviceType" to value.deviceType, "transmissionType" to value.transmissionType)
+                        }
+                    } catch (error: Exception) {
+                        identityReadbackError = antErrorDetails(error)
+                        event("channel_identity_readback_error", "No se puede verificar el ID del canal; control bloqueado", error, identityReadbackError)
+                        if (error is android.os.RemoteException) { radioDead = true; throw error }
+                    }
+                }
+                event("v1_listening", "Escucha V1 activa; modo=$mode; destino=$target; control manual desactivado hasta habilitación explícita")
                 if (training) {
                     phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
-                    main.post(heartbeat)
+                    if (checkOnly) deadline(45) { finish("check_timeout") }
+                    scheduleTrainingTick()
                 } else deadline(40) { advance() }
                 publish()
             } catch (error: ChannelNotAvailableException) {
@@ -427,16 +949,43 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 } else { fail("V1 configure", error) }
             }
         }
-        override fun onServiceDisconnected(name: ComponentName) { submit { if (!finished) { event("service_disconnected", "ANT Radio Service desconectado"); finish("disconnected") } } }
+        override fun onServiceDisconnected(name: ComponentName) { radioDead = true; submit { if (!finished) { event("service_disconnected", "ANT Radio Service desconectado"); finish("radio_service_disconnected") } } }
         override fun onBindingDied(name: ComponentName) { onServiceDisconnected(name) }
         override fun onNullBinding(name: ComponentName) { onServiceDisconnected(name) }
 
-        private fun receive(type: String, messageId: Int, content: ByteArray) {
+        private fun receive(type: String, messageId: Int, content: ByteArray, receivedAt: Long) {
             val decoded = decodeAntFrame(messageId, content)
-            if (training && decoded != null && !telemetry!!.accepts(decoded)) return
+            if (training && decoded == null && messageId in listOf(0x4e, 0x4f) && content.size >= 9 &&
+                (content[1].toInt() and 255) in listOf(0x50, 0x51)) {
+                val payload = content.copyOfRange(1, 9)
+                val details = mapOf("payloadHex" to hex(payload), "receivedAtMs" to receivedAt,
+                    "reason" to "extended_identity_missing_or_invalid")
+                event("identification_frame_ignored", "Página de identificación sin identidad ANT verificable", details = details)
+                record("identification_frame_ignored", payload, details)
+            }
             if (training && decoded != null) {
-                telemetry!!.receive(decoded, android.os.SystemClock.elapsedRealtime())
-                record("page", decoded.payload)
+                receivedChannelId = mapOf("deviceNumber" to decoded.deviceNumber, "deviceType" to decoded.deviceType, "transmissionType" to decoded.transmissionType)
+                if (!linkTelemetry!!.accepts(decoded)) {
+                    event("channel_identity_mismatch", "Paquete ajeno al rodillo seleccionado; ignorado",
+                        details = receivedChannelId.orEmpty() + mapOf("payloadHex" to hex(decoded.payload), "receivedAtMs" to receivedAt))
+                    return
+                }
+            }
+            if (training && decoded != null) {
+                if (!identityVerified) { identityVerified = true; event("identity_verified", "Identidad extendida recibida coincide con $target") }
+                if (isScreenOff && ++screenOffFrames == 1L) recordLifecycle(mapOf(
+                    "event" to "ant_received_screen_off", "receivedAtMs" to receivedAt,
+                    "page" to (decoded.payload[0].toInt() and 255)))
+                identificationTiming.receive(decoded, receivedAt)
+                if (linkTelemetry!!.lastReceivedMs?.let { receivedAt - it >= BkoolTelemetry.SIGNAL_LOST_MS } == true) {
+                    linkInterrupted = true
+                }
+                linkTelemetry.receive(decoded, receivedAt)
+                val workoutTelemetry = telemetry.takeUnless { workoutFinal || stopping }
+                val page = workoutTelemetry?.receive(decoded, receivedAt)
+                if (page?.page == 0x10) virtualElevation?.observe(workoutTelemetry.distanceMeters, workoutTelemetry.distanceIntervalValid)
+                if (!checkOnly) observeBkoolPage11(decoded.payload)?.let { manual.observePage11(it, receivedAt) }
+                if ((decoded.payload[0].toInt() and 255) !in listOf(0x50, 0x51)) record("page", decoded.payload)
             }
             if (frames.size >= 2000) { frames.removeFirst(); droppedFrames++ }
             frames.addLast(mapOf("timestamp" to now(), "protocol" to "BKOOL_V1_PUBLIC", "messageType" to type,
@@ -457,15 +1006,20 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 device["lastSeen"] = now()
                 manufacturerPage(decoded.payload)?.let { page ->
                     device.putAll(page)
-                    event("information_page", "ANT ID=${decoded.deviceNumber} página=${decoded.payload[0].toInt() and 255}: $page")
+                    val observation = page + mapOf("receivedAtMs" to receivedAt, "payloadHex" to hex(decoded.payload),
+                        "identityVerifiedForControl" to (page["manufacturerId"] == 67 && page["modelNumber"] == 22))
+                    event("information_page", "ANT ID=${decoded.deviceNumber} página=${decoded.payload[0].toInt() and 255}: $page",
+                        details = observation)
+                    record("information_page", decoded.payload, observation)
                 }
             }
             if (type == "CHANNEL_EVENT" && content.size >= 3) {
                 val code = content[2].toInt() and 255
                 event("channel_event", "Evento ANT recibido: 0x%02X".format(code))
                 if (code == 1 || code == 7) {
+                    radioDead = true
                     phaseErrors = true
-                    if (training) finish("disconnected") else advance()
+                    if (training) finish(if (code == 7) "channel_closed" else "radio_search_timeout") else advance()
                     return
                 }
             }
@@ -490,12 +1044,17 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                     }
                 }
                 if (opened) actions.add {
-                    if (channelClosed.count != 0L) operations.run("cleanup.closeChannel") { c.close() }
+                    if (channelClosed.count != 0L) operations.run("cleanup.closeChannel") {
+                        transmissionAudit.closeRequested()
+                        c.close()
+                        transmissionAudit.closeApiReturned()
+                    }
                     operations.run("cleanup.awaitChannelClosed", mapOf("timeoutSeconds" to 3)) {
-                        if (!channelClosed.await(3, TimeUnit.SECONDS)) throw IllegalStateException("No se confirmó CHANNEL_CLOSED en 3 s")
+                        if (!channelClosed.await(3, TimeUnit.SECONDS) || transmissionAudit.snapshot()["channelClosedEventAtMs"] == null)
+                            throw IllegalStateException("No se confirmó CHANNEL_CLOSED en 3 s (muerte del canal no equivale al evento)")
                     }
                 }
-                if (assigned) actions.add { if (!opened || channelClosed.count == 0L) operations.run("cleanup.unassignChannel") { c.unassign() } }
+                if (assigned) actions.add { if (!opened || transmissionAudit.snapshot()["channelClosedEventAtMs"] != null) operations.run("cleanup.unassignChannel") { c.unassign() } }
                 actions.add { operations.run("cleanup.releaseChannel") { c.release() } }
             }
             if (bound) actions.add { operations.run("cleanup.unbindService") { context.unbindService(this) } }
@@ -508,6 +1067,7 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
             return resourcesReleased
         }
         private fun advance() {
+            if (training) { finish(if (phaseErrors) "error" else "completed"); return }
             val from = stage
             if (!cleanup()) { finish("cleanup_failed"); return }
             if (cancelled) { finish("stopped"); return }
@@ -516,22 +1076,82 @@ class AntTrainerSearch(context: Context, private val training: Boolean = false,
                 else -> finish(if (phaseErrors) "partial" else "completed")
             }
         }
+        fun end(reason: String, result: MethodChannel.Result? = null, keepConnection: Boolean = false) {
+            if (finished) { result?.success(latest); return }
+            result?.let { stopReplies.add(it) }
+            if (!stopping) retainAfterStop = keepConnection
+            finish(reason)
+        }
         fun finish(reason: String) {
+            if (finished || stopping) return
+            stopping = true; cancelled = true
+            if (!checkOnly) finishReason = reason
+            invalidateTargets(reason)
+            if (training && !checkOnly) trainingEndedMs = trainingEndedMs ?: android.os.SystemClock.elapsedRealtime()
+            val zeroQueued = manual.stop(reason, allowZero = !radioDead && opened && reason != "disconnected")
+            event("safe_stop", "Parada $reason; solicitud 0 % a API=$zeroQueued. Aplicación y resistencia segura SIN confirmar.")
+            if (zeroQueued) stopDrainUntilMs = android.os.SystemClock.elapsedRealtime() + ManualAntControl.DRAIN_MS
+            val drain = stopDrainUntilMs - android.os.SystemClock.elapsedRealtime()
+            if (drain > 0) {
+                status = "stopping_zero_unconfirmed"; publish()
+                val task = Runnable { submit { closeAfterStop(reason) } }
+                finalClose = task
+                main.postDelayed(task, drain)
+            } else closeAfterStop(reason)
+        }
+        private fun completeWorkout(reason: String) {
+            manual.completeStop(true)
+            trainingEndedMs = trainingEndedMs ?: android.os.SystemClock.elapsedRealtime()
+            status = reason
+            record("finished:$reason", null, mapOf("recordState" to "final", "status" to status,
+                "resourcesReleased" to false, "stopResult" to manual.snapshot()["stopResult"]))
+            try { csv?.close() } catch (error: Exception) { csvFailure(error) }
+            csv = null
+            synchronized(this) {
+                workoutFinal = true
+                stopping = false
+                checkOnly = true
+                cancelled = false
+            }
+            presenceSinceMs = android.os.SystemClock.elapsedRealtime()
+            phaseDeadline?.let { main.removeCallbacks(it) }; deadlineSerial++
+            publish()
+            stopReplies.forEach { it.success(snapshot()) }; stopReplies.clear()
+            scheduleTrainingTick()
+        }
+
+        private fun closeAfterStop(reason: String) {
             if (finished) return
-            main.removeCallbacks(heartbeat)
+            finalClose?.let { main.removeCallbacks(it) }; finalClose = null
+            if (retainAfterStop && trainingOwner?.failure() == null &&
+                connectionCheckOutcome(manualLink()) == "check_verified" && !radioDead &&
+                transmissionAudit.channelUsable && manual.canRetainChannel()) {
+                completeWorkout(reason)
+                return
+            }
             val clean = cleanup()
+            identificationTiming.finish()
+            manual.completeStop(clean)
+            status = if (!clean) "cleanup_failed" else reason
             if (training) {
-                record("finished:$reason", null)
+                if (trainingOwner != null) recordLifecycle(mapOf("event" to "service_stopping",
+                    "reason" to reason, "screenOff" to isScreenOff, "antFramesWhileOff" to screenOffFrames))
+                record("finished:$reason", null, mapOf("recordState" to "final", "status" to status,
+                    "stopReason" to reason, "resourcesReleased" to clean, "stopResult" to manual.snapshot()["stopResult"]))
                 try { csv?.close() } catch (error: Exception) { csvFailure(error) }
                 csv = null
             }
-            status = if (!clean) "cleanup_failed" else reason
             stage = "finished"; finished = true
             main.removeCallbacks(publishLater)
             event("search_finished", "Finalizado: $status; recursos liberados=$resourcesReleased")
-            publish()
             if (resourcesReleased) AntRadioCoordinator.release(this)
-            active = null
+            publish()
+            main.post {
+                val restart = restartAfterClose
+                restart?.invoke(resourcesReleased)
+                trainingOwner?.finished()
+            }
+            stopReplies.forEach { it.success(snapshot()) }; stopReplies.clear()
             worker.shutdown()
         }
     }

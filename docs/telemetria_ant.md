@@ -84,12 +84,11 @@ para ajustar tolerancias; los datos crudos permanecen en CSV para auditarlo.
 
 ## Canal y recursos
 
-Se reutiliza `AntTrainerSearch` en una instancia independiente de entrenamiento:
-PUBLIC, RF 40, período 32768, `SLAVE_RECEIVE_ONLY` y background scanning con
-identidades extendidas, sin timeouts de radio incompatibles. La identidad del
-canal sigue siendo comodín como en la búsqueda ya probada; **solo** los paquetes
-30064/112/5 actualizan telemetría, CSV y presencia. No se selecciona otro equipo
-si desaparece este rodillo. No hay límite de 40 s para entrenar.
+El entrenamiento usa un canal dedicado PUBLIC, RF 40, período 32768,
+`BIDIRECTIONAL_SLAVE` e identidad extendida. La identidad seleccionada se compara
+con la configurada, la leída del adaptador y la recibida. El control exige además
+la identidad validada 30064/112/5 y fabricante 67/modelo 22.
+La búsqueda ANT mantiene sus canales de recepción independientes.
 
 El coordinador compartido impide simultanear entrenamiento, búsquedas o
 reserva de diagnóstico ANT. No se activa FE-C ni la red privada V2 en entrenamiento.
@@ -99,9 +98,9 @@ reserva de diagnóstico ANT. No se activa FE-C ni la red privada V2 en entrenami
 - Desconexión y liberación: 15 s desde la última página.
 - Velocidad o potencia/cadencia con 10 s de antigüedad: cifra ausente, aunque
   sigan llegando páginas informativas. La potencia y la velocidad tienen edades separadas.
-- Finalizar, volver atrás o pasar la aplicación a segundo plano cierran recursos.
-  La pantalla permanece encendida durante una sesión activa. No hay servicio
-  de entrenamiento en segundo plano; bloquear el teléfono termina la sesión.
+- Finalizar o salir del entrenamiento cierran recursos. Desde 1.6, el servicio Android supervisa
+  el enlace cuando se apaga la pantalla o la actividad deja de estar visible.
+  [Ciclo de vida y validación](entrenamiento_segundo_plano_1_6.md).
 - Los fallos de permisos/servicio/configuración/canal y operaciones de limpieza
   se mantienen en los eventos y en `antTraining` del diagnóstico JSON general.
   Si falla la limpieza, no se afirma liberación y se bloquean nuevas reservas
@@ -111,7 +110,7 @@ reserva de diagnóstico ANT. No se activa FE-C ni la red privada V2 en entrenami
 
 `BkoolTelemetry.kt` es Kotlin puro, sin widgets ni dependencias de la radio.
 Flutter recibe snapshots mediante `openbkool/training/events`; los métodos
-start/stop/exportCsv utilizan `openbkool/training`.
+start/authorizeControl/setManualSlope/stop/exportCsv utilizan `openbkool/training`.
 
 Cada sesión escribe un archivo `training_*.csv` en el directorio privado Android,
 con vaciado cada segundo y cierre al terminar. Incluye fecha UTC, tiempo
@@ -122,7 +121,7 @@ CSV se muestran y no impiden liberar ANT. JSON conserva un búfer acotado de
 2000 mensajes y 500 eventos de entrenamiento, con contadores de descartes;
 el CSV no depende de ese búfer.
 
-«Exportar CSV al portapapeles» está disponible tras finalizar: pegar su contenido
+«Copiar CSV» está disponible tras finalizar: pegar su contenido
 en un archivo `.csv`, como en la exportación JSON existente. Usa decimal con
 punto, separador coma, cabecera y escape de comillas. Exportar una sesión muy
 larga requiere cargar el archivo en memoria y puede superar el límite del
@@ -165,3 +164,5 @@ Actualización posterior del 2026-11-13 (integración del nuevo icono):
 La APK `build/app/outputs/flutter-apk/app-debug.apk` ya incluye los últimos
 ajustes de telemetría descritos arriba. Queda resuelto el bloqueo anterior de
 compilación; la prueba física de entrenamiento sigue pendiente.
+
+La integración actual de control y parada se describe en [Entrenamiento libre](entrenamiento_libre_1_5.md).

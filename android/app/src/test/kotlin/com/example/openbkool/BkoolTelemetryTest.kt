@@ -7,6 +7,36 @@ import java.time.Instant
 class BkoolTelemetryTest {
     private fun bytes(s: String) = s.split(" ").map { it.toInt(16).toByte() }.toByteArray()
     private fun frame(s: String, id: Int = 30064) = AntReceivedFrame(id, 112, 5, bytes(s))
+    @Test fun suppliedS20Page11IsRawObservationNotMechanicalAcknowledgement() {
+        val t=BkoolTelemetry(0)
+        val lines=javaClass.getResourceAsStream("/s20_refresh_1_3_1_page11.csv")!!.bufferedReader().readLines().drop(1)
+        val first=Instant.parse(lines.first().substringBefore(',')).toEpochMilli()
+        val words=mutableListOf<Int>()
+        for(line in lines) {
+            val ms=Instant.parse(line.substringBefore(',')).toEpochMilli()-first
+            assertNull(t.receive(frame(line.substringAfter(',')),ms))
+            val observation=t.snapshot(ms)["page11Observation"] as Map<*,*>
+            words.add(observation["rawWordAtBytes4And5"] as Int)
+            assertEquals(false,observation["commandAcknowledgement"])
+            assertEquals(false,observation["mechanicalConfirmation"])
+            assertFalse(observation.containsKey("appliedPercent"))
+            assertNull(t.snapshot(ms)["powerW"])
+        }
+        assertEquals(listOf(20000,20050,20050),words)
+        assertNull(BkoolTelemetry(0).snapshot(0)["page11Observation"])
+        assertNull(observeBkoolPage11(bytes("11 FF")))
+        assertNull(observeBkoolPage11(bytes("10 FF FF FF 52 4E 00 34")))
+    }
+    @Test fun page11DoesNotRefreshMetricAgesAndWrongIdentityIsIgnored() {
+        val t=BkoolTelemetry(0)
+        t.receive(frame("19 51 00 2D 23 00 40 36"),0)
+        t.receive(frame("11 FF FF FF 52 4E 00 34",1),1000)
+        assertNull(t.snapshot(1000)["page11Observation"])
+        t.receive(frame("11 FF FF FF 52 4E 00 34"),2000)
+        assertEquals(2000L,t.snapshot(2000)["powerAgeMs"])
+        val old=t.snapshot(10000)["page11Observation"] as Map<*,*>
+        assertEquals(true,old["stale"]);assertNull(t.snapshot(10000)["powerW"])
+    }
     @Test fun capturedUnitsAndPowerMask() {
         val speed = decodeBkoolPage(bytes("10 19 98 65 86 0D FF 3C"))!!
         assertEquals(12.4632, speed.speedKmh!!, 0.000001)
@@ -71,6 +101,55 @@ class BkoolTelemetryTest {
         t.receive(frame("10 19 00 01 86 0D FF 3C"), 2000)
         assertEquals(1L, t.snapshot(2000)["distanceM"])
     }
+    @Test fun prolongedSessionsSuspendControlWithoutStoppingTelemetryAndDetectTotalLoss() {
+        for (minutes in listOf(30, 60)) {
+            val telemetry = BkoolTelemetry(0)
+            val target = AntTrainerIdentity(30064, 112, 5)
+            var now = 0L
+            val writes = mutableListOf<Boolean>()
+            val control = ManualAntControl(target, { now }, {
+                val state = telemetry.snapshot(now)
+                ManualControlLink(true, true, 67, 22, state["signalAgeMs"] as Long?,
+                    state["powerW"] != null && state["cadenceRpm"] != null && state["speedKmh"] != null)
+            }, { _, stop -> writes.add(stop) }, {})
+            for (second in 0..minutes * 60) {
+                now = second * 1000L
+                telemetry.receive(frame("10 19 98 65 86 0D FF 3C"), now)
+                if (second % 2 == 0) telemetry.receive(frame("11 FF FF FF 52 4E 00 34"), now)
+                if (second % 3 == 0) telemetry.receive(frame("54 FF FF FF FF FF FF FF"), now)
+                if (second !in 810..825 && second !in 1050..1063) {
+                    telemetry.receive(frame("19 BF 17 D2 05 1D 40 36"), now)
+                }
+                if (second == 0) {
+                    assertEquals("enabled", control.enable()["event"])
+                    control.request(0.5)
+                }
+                if (control.abortReason() == "link_lost:telemetry_not_fresh") {
+                    assertTrue(control.suspendForMissingTelemetry())
+                }
+                control.refreshTarget()
+                assertEquals("receiving", telemetry.signal(now))
+                if (second == 821 || second == 1062) {
+                    val snapshot = telemetry.snapshot(now)
+                    assertEquals(true, snapshot["partial"])
+                    assertNull(snapshot["powerW"])
+                    assertNotNull(snapshot["speedKmh"])
+                    assertEquals("suspended", control.snapshot()["state"])
+                }
+                if (second == 826 || second == 1064) {
+                    assertEquals(29, telemetry.snapshot(now)["powerW"])
+                    assertEquals(false, control.snapshot()["enabled"])
+                }
+            }
+            assertEquals(1, writes.count { it })
+            assertTrue(writes.last())
+            assertEquals("signal_lost", telemetry.signal(now + 5000))
+            assertEquals("disconnected", telemetry.signal(now + 15000))
+            assertFalse(control.stop("disconnected", allowZero = false))
+            assertEquals(1, writes.count { it })
+        }
+    }
+
     @Test fun csvEscapesAndUsesDecimalPoint() {
         assertEquals("1.5,\"a,b\",\"a\"\"b\",\r\n", csvRow(listOf(1.5, "a,b", "a\"b", null)))
     }

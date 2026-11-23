@@ -363,7 +363,7 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     addTearDown(() => debugDefaultTargetPlatformOverride = null);
-    await tester.pumpWidget(const OpenBkoolApp());
+    await tester.pumpWidget(const MaterialApp(home: BleDiagnosticPage()));
     await tester.pumpAndSettle();
   }
 
@@ -599,7 +599,7 @@ void main() {
         (report['devices'] as List).single['advertisedName'],
         'Bkool conservado',
       );
-      await tester.pageBack();
+      await tester.tap(find.text('Diagnóstico ANT+'));
       await tester.pumpAndSettle();
       expect(find.text('Bkool conservado'), findsOneWidget);
       await export(tester);
@@ -755,7 +755,7 @@ void main() {
     await tester.pageBack();
     await tester.pumpAndSettle();
     expect(searchCommands, ['start:sequential', 'stop']);
-    expect(find.text('OpenBkool · BLE diagnóstico'), findsOneWidget);
+    expect(find.text('Diagnósticos avanzados'), findsOneWidget);
     await close(tester);
   });
 
