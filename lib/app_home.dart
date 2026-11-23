@@ -162,20 +162,24 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                           ConstrainedBox(
                             constraints: const BoxConstraints(maxWidth: 156),
                             child: TextButton(
-                              onPressed: session.checkRunning
-                                  ? (session.training.manualStopping
-                                        ? null
-                                        : session.training.stop)
+                              onPressed: session.training.manualStopping
+                                  ? null
+                                  : session.checkRunning
+                                  ? () => session.disconnect(cancelCheck: true)
                                   : session.loading ||
                                         session.locked ||
                                         session.preferenceError != null
                                   ? null
+                                  : session.readOnly
+                                  ? session.disconnect
                                   : () => session.connect(checkOnly: true),
                               child: FittedBox(
                                 fit: BoxFit.scaleDown,
                                 child: Text(
                                   session.checkRunning
                                       ? 'Cancelar'
+                                      : session.readOnly
+                                      ? 'Desconectar'
                                       : 'Comprobar conexión',
                                 ),
                               ),
@@ -202,7 +206,7 @@ class _OpenBkoolShellState extends State<OpenBkoolShell> {
                         style: TextStyle(fontWeight: FontWeight.bold),
                       ),
                       trailing: const Icon(Icons.chevron_right),
-                      onTap: session.loading || session.checkRunning
+                      onTap: session.loading || session.training.commandBusy
                           ? null
                           : openTraining,
                     ),
@@ -307,6 +311,8 @@ class TrainerSelectionPage extends StatelessWidget {
               onPressed: session.locked
                   ? null
                   : () async {
+                      if (session.readOnly) await session.disconnect();
+                      if (!context.mounted || session.readOnly) return;
                       await Navigator.of(context).push<void>(
                         MaterialPageRoute(
                           builder: (_) => AntTrainerSearchPage(

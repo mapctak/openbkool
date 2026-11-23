@@ -32,7 +32,7 @@ class VirtualElevationTest {
         assertEquals(listOf(0L, 0L, 1L, 1L), profile.snapshot().map { it[2] })
         profile.unavailable()
         profile.observe(200, true)
-        assertEquals(150L, profile.snapshot().last()[0])
+        assertEquals(listOf<Number>(200L, 6.25, 2L), profile.snapshot().last())
     }
 
     @Test fun longSessionsRetainOriginEndAndExtremaWithABoundedHistory() {
@@ -58,5 +58,19 @@ class VirtualElevationTest {
         assertEquals(25_000L, points.last()[0])
         assertEquals(min, points.minOf { it[1].toDouble() }, 1e-8)
         assertEquals(max, points.maxOf { it[1].toDouble() }, 1e-8)
+    }
+    @Test fun repeatedInvalidSamplesFreezeTheVisibleEndpointUntilConfirmedDistanceReturns() {
+        val profile = VirtualElevation()
+        profile.accepted(10.0)
+        profile.observe(100, true)
+        val before = profile.snapshot()
+        profile.observe(110, false)
+        profile.observe(150, false)
+        profile.observe(150, false)
+        assertEquals(before, profile.snapshot())
+        profile.observe(170, true)
+        assertEquals(listOf(0L, 100L, 150L, 170L), profile.snapshot().map { it[0] })
+        assertEquals(listOf(0.0, 10.0, 10.0, 12.0), profile.snapshot().map { it[1] })
+        assertEquals(listOf(0L, 0L, 1L, 1L), profile.snapshot().map { it[2] })
     }
 }

@@ -138,6 +138,10 @@ internal class ManualAntControl(
                     if (faulted) "api_fault_requires_reconnect" else link().reason(target) ?: "link_valid")), result = false)
         }
     }
+    // A drained broadcast has no payload-level confirmation. Reuse only if no
+    // slope entered ANT and the controller has never faulted.
+    fun canRetainChannel() = stopped && !faulted && lastManualApiSuccess == null && terminalAbort == null
+
     fun completeStop(clean: Boolean) {
         closeComplete = true; closeFailed = !clean
         supervise()

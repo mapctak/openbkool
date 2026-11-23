@@ -33,9 +33,16 @@ class MainActivity : FlutterActivity() {
                 "start" -> startTraining(call.argument<Map<String, Any?>>("device"), result,
                     checkOnly = call.argument<String>("mode") == "training_connection_check")
                 "stop" -> {
-                    trainingPermissionRequest?.reply?.error("training_start_cancelled", "Entrenamiento sin iniciar", null)
-                    trainingPermissionRequest = null
-                    TrainingService.stop(result, if (call.argument<String>("reason") == "screen_closed") "screen_closed" else "user_finish")
+                    val reason = call.argument<String>("reason")
+                    val connectionOnly = reason == "cancel_check" || reason == "disconnect_trainer"
+                    if (trainingPermissionRequest?.checkOnly == connectionOnly) {
+                        trainingPermissionRequest?.reply?.error("training_start_cancelled", "Entrenamiento sin iniciar", null)
+                        trainingPermissionRequest = null
+                    }
+                    TrainingService.stop(result, when (reason) {
+                        "screen_closed", "cancel_check", "disconnect_trainer" -> reason
+                        else -> "user_finish"
+                    }, connectionOnly, call.argument<String>("expectedId"), reason == "disconnect_trainer")
                 }
                 "snapshot" -> result.success(TrainingService.snapshot())
                 else -> {

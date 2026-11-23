@@ -13,14 +13,20 @@ class FakeTraining extends AntTrainerSearchController {
   FakeTraining() : super(channelName: 'openbkool/training');
   final starts = <Map<String, Object?>>[];
   int stops = 0;
+  Map<String, Object?>? workoutStopReport;
   @override
   Future<void> start(String mode, {Map<String, Object?>? device}) async {
     starts.add({'mode': mode, 'device': device});
     emit({
-      'running': true,
+      'running': mode != 'training_connection_check',
       'status': 'starting',
       'selectedDevice': device,
       'mode': mode,
+      if (mode == 'training_connection_check') ...{
+        'trainingServiceActive': true,
+        'connectionOnly': true,
+        'antConnectionState': 'connecting',
+      },
     });
   }
 
@@ -30,9 +36,19 @@ class FakeTraining extends AntTrainerSearchController {
   }
 
   @override
-  Future<void> stop({String reason = 'user_finish'}) async {
+  Future<void> stop({String reason = 'user_finish', String? expectedId}) async {
     stops++;
-    emit({...snapshot, 'running': false, 'status': reason});
+    if (workoutStopReport case final report?) {
+      emit(report);
+      return;
+    }
+    emit({
+      ...snapshot,
+      'running': false,
+      'status': reason,
+      'trainingServiceActive': false,
+      'antConnectionState': 'disconnected',
+    });
   }
 }
 
@@ -191,10 +207,6 @@ void main() {
         'device': SavedTrainer.known.device,
       });
       expect(find.text('Conectando'), findsOneWidget);
-      await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
-      await tester.pumpAndSettle();
-      expect(training.starts, hasLength(1));
-      expect(find.text('CALENTAMIENTO'), findsNothing);
       await tester.tap(find.text('Cancelar'));
       await tester.pumpAndSettle();
       expect(training.stops, 1);
@@ -204,19 +216,73 @@ void main() {
       training.emit({
         'mode': 'training_connection_check',
         'running': false,
-        'status': 'check_verified',
-        'resourcesReleased': true,
+        'status': 'running',
+        'selectedDevice': SavedTrainer.known.device,
+        'trainingServiceActive': true,
+        'antConnectionState': 'read_only',
+        'connectionOnly': true,
+        'resourcesReleased': false,
       });
       await tester.pumpAndSettle();
-      expect(find.text('Desconectado'), findsOneWidget);
-      expect(
-        find.text('Rodillo verificado. Comprobación finalizada.'),
-        findsOneWidget,
-      );
+      expect(find.text('Conectado'), findsOneWidget);
+      expect(find.text('Desconectar'), findsOneWidget);
+      await tester.tap(find.byTooltip('Ajustes'));
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('Conectado'), findsOneWidget);
+      expect(training.stops, 1);
       await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
       await tester.pumpAndSettle();
       expect(training.starts.last['mode'], 'training_connected');
       expect(find.text('CALENTAMIENTO'), findsOneWidget);
+      final readOnly = <String, Object?>{
+        'selectedDevice': SavedTrainer.known.device,
+        'connectionId': 'channel',
+        'connectionActionId': 'channel',
+        'connectionOnly': true,
+        'antConnectionState': 'read_only',
+        'trainingServiceActive': true,
+        'running': false,
+      };
+      Map<String, Object?> workout(String id) => {
+        ...readOnly,
+        'sessionId': id,
+        'connectionOnly': false,
+        'connectionActionId': id,
+        'antConnectionState': 'training',
+        'running': true,
+        'manualControl': {'eligible': true, 'enabled': true, 'state': 'active'},
+      };
+      training.emit(workout('first'));
+      await tester.pumpAndSettle();
+      expect(find.text('¡COMIENZA EL ENTRENAMIENTO!'), findsOneWidget);
+      training.workoutStopReport = {
+        ...readOnly,
+        'sessionId': 'first',
+        'recordState': 'final',
+        'status': 'user_finish',
+        'csvFile': 'first.csv',
+      };
+      await tester.tap(find.text('DETENER ENTRENAMIENTO'));
+      await tester.pumpAndSettle();
+      expect(training.running, false);
+      await tester.tap(find.byTooltip('Exportar entrenamiento'));
+      await tester.pumpAndSettle();
+      expect(find.text('Copiar CSV'), findsOneWidget);
+      expect(find.text('Copiar JSON'), findsOneWidget);
+      tester.state<NavigatorState>(find.byType(Navigator)).pop();
+      await tester.pumpAndSettle();
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('Conectado'), findsOneWidget);
+      await tester.tap(find.text('ENTRENAMIENTO LIBRE'));
+      await tester.pumpAndSettle();
+      training.emit(workout('second'));
+      await tester.pumpAndSettle();
+      expect(training.snapshot['sessionId'], 'second');
+      expect(training.snapshot['connectionId'], 'channel');
+      expect(training.snapshot['csvFile'], isNull);
       await tester.pumpWidget(const SizedBox());
       session.dispose();
     },

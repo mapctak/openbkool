@@ -35,4 +35,33 @@ class TrainingServicePolicyTest {
         assertFalse(TrainingServicePolicy.acceptsStop("current", null))
         assertFalse(TrainingServicePolicy.acceptsStop(null, "old"))
     }
+    @Test fun preparationReusesOnlyTheRequestedConnection() {
+        val policy = TrainingServicePolicy
+        assertFalse(policy.replaceConnection(true, true, "check_verified", true))
+        assertFalse(policy.replaceConnection(true, false, null, false))
+        assertTrue(policy.replaceConnection(true, true, null, true))
+        assertTrue(policy.replaceConnection(true, true, "check_verified", false))
+        assertTrue(policy.replaceConnection(false, true, "check_verified", true))
+        assertTrue(policy.replaceConnection(true, false, "check_wrong_model", true))
+    }
+
+    @Test fun oldCheckAndNotificationCannotStopANewWorkout() {
+        val policy = TrainingServicePolicy
+        assertTrue(policy.acceptsConnectionAction(true, true, "link", "link"))
+        assertFalse(policy.acceptsConnectionAction(false, true, "workout-1", null))
+        assertFalse(policy.acceptsConnectionAction(false, true, "workout-1", "link"))
+        assertTrue(policy.acceptsConnectionAction(false, false, "workout-1", "workout-1"))
+        assertFalse(policy.acceptsConnectionAction(false, false, "workout-2", "workout-1"))
+        assertFalse(policy.acceptsConnectionAction(true, false, "link", "workout-1"))
+    }
+
+    @Test fun idleLinkSurvivesTemporaryBackgroundAndExpiresOnlyAfterItsFullWindow() {
+        val policy = TrainingServicePolicy
+        val limit = policy.IDLE_BACKGROUND_LIMIT_MS
+        assertFalse(policy.idleExpired(2 * limit, 10, null))
+        assertFalse(policy.idleExpired(100, 10, 20))
+        assertFalse(policy.idleExpired(limit + 19, 10, 20))
+        assertTrue(policy.idleExpired(limit + 20, 10, 20))
+        assertTrue(policy.idleExpired(limit + 30, 30, 20))
+    }
 }

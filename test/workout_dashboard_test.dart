@@ -54,7 +54,9 @@ void main() {
         final data = (await image.toByteData())!;
         int green(int x) => data.getUint8((58 * image.width + x) * 4 + 1);
         expect(green(284), greaterThan(180));
-        expect(green(100), greaterThan(green(103)));
+        for (var x = 40; x < 284; x++) {
+          expect(green(x), greaterThan(180), reason: "continuous stroke at $x");
+        }
         image.dispose();
       });
     },

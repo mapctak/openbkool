@@ -322,28 +322,11 @@ class _ElevationPainter extends CustomPainter {
     }
     final line = Path();
     final fill = Path();
-    final uncertain = Path();
     Offset? previous;
-    num? segment;
     for (final point in series) {
       final px = current > 0 ? x((point[0] as num).toDouble()) : area.left;
       final py = y((point[1] as num).toDouble());
-      final next = Offset(px, py);
-      final nextSegment = point[2] as num;
-      if (previous == null || segment != nextSegment) {
-        if (previous != null) {
-          fill.lineTo(previous.dx, area.bottom);
-          fill.close();
-          final delta = next - previous;
-          for (var d = 0.0; d < delta.distance; d += 6) {
-            final start = previous + delta * (d / delta.distance);
-            final end =
-                previous +
-                delta * (math.min(d + 3, delta.distance) / delta.distance);
-            uncertain.moveTo(start.dx, start.dy);
-            uncertain.lineTo(end.dx, end.dy);
-          }
-        }
+      if (previous == null) {
         line.moveTo(px, py);
         fill.moveTo(px, area.bottom);
         fill.lineTo(px, py);
@@ -351,8 +334,7 @@ class _ElevationPainter extends CustomPainter {
         line.lineTo(px, py);
         fill.lineTo(px, py);
       }
-      previous = next;
-      segment = nextSegment;
+      previous = Offset(px, py);
     }
     if (previous != null) {
       fill.lineTo(previous.dx, area.bottom);
@@ -376,13 +358,6 @@ class _ElevationPainter extends CustomPainter {
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2
         ..strokeJoin = StrokeJoin.round,
-    );
-    canvas.drawPath(
-      uncertain,
-      Paint()
-        ..color = dashboardAccent.withValues(alpha: .58)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
     );
     if (previous != null) {
       canvas.drawCircle(previous, 3, Paint()..color = dashboardAccent);

@@ -83,6 +83,7 @@ class _TrainingPageState extends State<TrainingPage>
   }
 
   bool readyForControl(Map<String, Object?> report) =>
+      report['running'] == true &&
       report['mode'] != 'training_connection_check' &&
       report['sessionId'] is String &&
       report['trainingServiceActive'] == true &&
@@ -159,7 +160,11 @@ class _TrainingPageState extends State<TrainingPage>
       cancelled = true;
       showStart = false;
     });
-    await widget.session.training.stop(reason: reason);
+    final controller = widget.session.training;
+    await controller.stop(
+      reason: reason,
+      expectedId: controller.snapshot['connectionActionId'] as String?,
+    );
   }
 
   Future<void> retry() async {

@@ -33,6 +33,8 @@ internal fun decodeBkoolPage(payload: ByteArray): BkoolPage? {
 
 internal class BkoolTelemetry(private val startedMs: Long,
     private val target: AntTrainerIdentity = AntTrainerIdentity(30064, 112, 5)) {
+    companion object { const val SIGNAL_LOST_MS = 5000L }
+
     var lastReceivedMs: Long? = null; private set
     private var speedAt: Long? = null
     private var powerAt: Long? = null
@@ -51,7 +53,7 @@ internal class BkoolTelemetry(private val startedMs: Long,
     fun receive(frame: AntReceivedFrame, ms: Long): BkoolPage? {
         if (!accepts(frame)) return null
         observeBkoolPage11(frame.payload)?.let { page11 = it; page11At = ms }
-        if (lastReceivedMs?.let { ms - it >= 5000 } == true) loseSignal()
+        if (lastReceivedMs?.let { ms - it >= SIGNAL_LOST_MS } == true) loseSignal()
         lastReceivedMs = ms
         signalLost = false
         val p = decodeBkoolPage(frame.payload) ?: return null
@@ -83,7 +85,7 @@ internal class BkoolTelemetry(private val startedMs: Long,
     fun signal(ms: Long): String {
         val age = ms - (lastReceivedMs ?: startedMs)
         if (lastReceivedMs == null) return if (age >= 30000) "disconnected" else "waiting"
-        if (age >= 5000) loseSignal()
+        if (age >= SIGNAL_LOST_MS) loseSignal()
         return if (age >= 15000) "disconnected" else if (signalLost) "signal_lost" else "receiving"
     }
     fun snapshot(ms: Long): Map<String, Any?> {

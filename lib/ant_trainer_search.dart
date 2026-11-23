@@ -175,16 +175,18 @@ class AntTrainerSearchController extends ChangeNotifier {
     final currentSequence = snapshot['reportSequence'];
     // EventChannel and MethodChannel can deliver snapshots in different order.
     // Never let an older RX snapshot roll back an accepted manual command.
-    if (incoming['sessionId'] != null &&
-        incoming['sessionId'] == snapshot['sessionId'] &&
+    final sameConnection =
+        incoming['connectionId'] != null &&
+        incoming['connectionId'] == snapshot['connectionId'];
+    final sameSession =
+        incoming['sessionId'] != null &&
+        incoming['sessionId'] == snapshot['sessionId'];
+    if ((sameConnection || sameSession) &&
         sequence is num &&
         currentSequence is num &&
         sequence < currentSequence) {
       return;
     }
-    final sameSession =
-        incoming['sessionId'] != null &&
-        incoming['sessionId'] == snapshot['sessionId'];
     if (!sameSession ||
         incoming['running'] == false ||
         (incoming['manualControl'] as Map?)?['stopped'] == true) {
@@ -277,7 +279,12 @@ class AntTrainerSearchController extends ChangeNotifier {
         },
         'mode': mode,
         'status': 'starting',
-        'running': true,
+        'running': mode != 'training_connection_check',
+        if (training) ...{
+          'antConnectionState': 'connecting',
+          'connectionOnly': mode == 'training_connection_check',
+          'connectionActionId': null,
+        },
         'clientError': null,
         'clientErrorCode': null,
         'resourcesReleased': null,
@@ -295,6 +302,8 @@ class AntTrainerSearchController extends ChangeNotifier {
         ...snapshot,
         'mode': mode,
         'status': cancelled ? 'user_finish' : 'start_error',
+        if (_nativeTrainingLifecycle)
+          'antConnectionState': cancelled ? 'disconnected' : 'error',
         'running': false,
         'clientError': cancelled ? null : error.toString(),
         'clientErrorCode': cancelled ? null : code,
@@ -307,7 +316,7 @@ class AntTrainerSearchController extends ChangeNotifier {
     }
   }
 
-  Future<void> stop({String reason = 'user_finish'}) async {
+  Future<void> stop({String reason = 'user_finish', String? expectedId}) async {
     if (manualStopping) return;
     manualStopping = true;
     _manualGeneration++;
@@ -316,7 +325,10 @@ class AntTrainerSearchController extends ChangeNotifier {
     _notify();
     try {
       final report = await channel
-          .invokeMapMethod<String, dynamic>('stop', {'reason': reason})
+          .invokeMapMethod<String, dynamic>('stop', {
+            'reason': reason,
+            'expectedId': ?expectedId,
+          })
           .timeout(const Duration(seconds: 20));
       if (report != null) _update(report);
     } catch (error) {
